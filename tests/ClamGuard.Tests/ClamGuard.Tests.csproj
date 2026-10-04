@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType></PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\ClamGuard.Core\ClamGuard.Core.csproj" />
+    <ProjectReference Include="..\..\src\ClamGuard.Signatures\ClamGuard.Signatures.csproj" />
+    <ProjectReference Include="..\..\src\ClamGuard.Database\ClamGuard.Database.csproj" />
+    <ProjectReference Include="..\..\src\ClamGuard.Scanner\ClamGuard.Scanner.csproj" />
+    <ProjectReference Include="..\..\src\ClamGuard.Yara\ClamGuard.Yara.csproj" />
+    <ProjectReference Include="..\..\src\ClamGuard.Bytecode\ClamGuard.Bytecode.csproj" />
+    <ProjectReference Include="..\..\src\ClamGuard.Production\ClamGuard.Production.csproj" />
+  </ItemGroup>
+</Project>

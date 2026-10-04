@@ -1,0 +1,1804 @@
+using System.Diagnostics;
+using System.Buffers;
+using System.Collections.Concurrent;
+using System.Buffers.Binary;
+using System.IO.Compression;
+using System.IO.MemoryMappedFiles;
+using System.Net;
+using System.Text;
+using System.Text.RegularExpressions;
+using ClamGuard.Core;
+using ClamGuard.Database;
+using ClamGuard.Database.Storage;
+using ClamGuard.Signatures;
+using ClamGuard.Signatures.Matching;
+using ClamGuard.Signatures.Patterns;
+using ClamGuard.Yara;
+using ClamGuard.Bytecode;
+
+namespace ClamGuard.Scanner;
+
+public sealed class ScannerEngine
+{
+    private readonly DatabaseManager _databaseManager;
+    private readonly ConcurrentDictionary<string, Lazy<IContentScanner>> _optionalScannerCache = new(StringComparer.OrdinalIgnoreCase);
+
+    public ScannerEngine(DatabaseManager databaseManager) => _databaseManager = databaseManager;
+
+    public ScanResult Scan(string path, ScanOptions? options = null)
+        => ScanAsync(path, options).GetAwaiter().GetResult();
+
+    public async Task<ScanResult> ScanAsync(string path, ScanOptions? options = null, CancellationToken cancellationToken = default)
+    {
+        options ??= new ScanOptions();
+        options.Limits.Validate();
+        options = CreateEffectiveOptions(options);
+        var started = Stopwatch.StartNew();
+        if (!File.Exists(path))
+            return new ScanResult(ScanVerdict.Error, path, null, [], 0, started.Elapsed, _databaseManager.Current.Database.Databases.FirstOrDefault());
+
+        var info = new FileInfo(path);
+        if (info.Length > options.Limits.MaxFileSize)
+            return new ScanResult(ScanVerdict.Error, path, DetectType(path), [], 0, started.Elapsed, _databaseManager.Current.Database.Databases.FirstOrDefault());
+
+        try
+        {
+            var state = _databaseManager.Current;
+            if (info.Length == 0)
+                return new ScanResult(ScanVerdict.Clean, path, DetectType(path), [], 0, started.Elapsed, state.Database.Databases.FirstOrDefault());
+
+            var ndbSignatures = state.Database.Signatures.OfType<NdbSignature>().ToArray();
+            var logicalSignatures = state.Database.Signatures.OfType<LogicalSignature>().ToArray();
+            var peSectionRules = state.Database.Signatures.OfType<HashSignature>()
+                .Where(x => PeSpecializedMatcher.IsSectionHash(x.SourceFile))
+                .ToArray();
+            var peImportRules = state.Database.Signatures.OfType<HashSignature>()
+                .Where(x => PeSpecializedMatcher.IsImportHash(x.SourceFile))
+                .ToArray();
+
+            // Container signatures such as ISO/UDF can be located well beyond the
+            // first few KiB. Probe enough of the front of the file to classify them
+            // before deciding whether full-buffer/container expansion is required.
+            // ClamAV cli_determine_fmap_type() uses MAGIC_BUFFER_SIZE (1028 bytes)
+            // for the initial file-type probe. Keep our fast path at the same scale;
+            // formats with out-of-band markers are handled by targeted reads below.
+            var probeLength = (int)Math.Min(1028L, info.Length);
+            var probe = new byte[probeLength];
+            await using (var probeStream = File.OpenRead(path))
+            {
+                var readProbe = 0;
+                while (readProbe < probe.Length)
+                {
+                    var read = await probeStream.ReadAsync(probe.AsMemory(readProbe), cancellationToken);
+                    if (read == 0) break;
+                    readProbe += read;
+                }
+                if (readProbe != probe.Length)
+                    probe = probe[..readProbe];
+            }
+            var rootType = DetectType(probe, path, state.Database.SpecialDatabases.FileTypes);
+
+            // .sdb rules are NDB-family rules marked as self-protection. ClamAV's
+            // self-protection scan runs against the raw layer before type-specific
+            // parsing. Our streaming NDB path now includes stream-safe SDB rules,
+            // while non-streamable rules are evaluated in the normal full-data path.
+            // This avoids forcing every file into a whole-file RAM buffer merely
+            // because an SDB database is loaded.
+
+            // DMG stores the UDIF "koly" marker in a 512-byte trailer. Read that
+            // trailer separately so extensionless/non-standardly named disk images
+            // still enter the container-expansion path.
+            // ISO9660 uses the CD001 descriptor at sector 16 (offset 32769).
+            // ClamAV performs this as a targeted type-detection check rather than
+            // inflating the initial magic buffer.
+            if (rootType == "Unknown" && info.Length >= 32774)
+            {
+                var isoProbe = new byte[5];
+                await using var isoStream = File.OpenRead(path);
+                isoStream.Position = 32769;
+                var readIso = 0;
+                while (readIso < isoProbe.Length)
+                {
+                    var read = await isoStream.ReadAsync(isoProbe.AsMemory(readIso), cancellationToken);
+                    if (read == 0) break;
+                    readIso += read;
+                }
+                if (readIso == isoProbe.Length && isoProbe.AsSpan().SequenceEqual("CD001"u8))
+                    rootType = "ISO";
+            }
+
+            if (rootType == "Unknown" && info.Length >= 32773)
+            {
+                // UDF's primary implementation descriptor can be outside the
+                // 1028-byte magic window. ClamAV uses the file map for this, so
+                // keep the managed fast path targeted rather than reading the file.
+                var udfProbe = new byte[5];
+                await using var udfStream = File.OpenRead(path);
+                udfStream.Position = 32768;
+                var readUdf = 0;
+                while (readUdf < udfProbe.Length)
+                {
+                    var read = await udfStream.ReadAsync(udfProbe.AsMemory(readUdf), cancellationToken);
+                    if (read == 0) break;
+                    readUdf += read;
+                }
+                if (readUdf == udfProbe.Length && udfProbe.AsSpan().SequenceEqual("BEA01"u8))
+                    rootType = "UDF";
+            }
+
+            if (rootType == "Unknown" && info.Length >= 512)
+            {
+                var tail = new byte[512];
+                await using var tailStream = File.OpenRead(path);
+                tailStream.Position = info.Length - tail.Length;
+                var readTail = 0;
+                while (readTail < tail.Length)
+                {
+                    var read = await tailStream.ReadAsync(tail.AsMemory(readTail), cancellationToken);
+                    if (read == 0) break;
+                    readTail += read;
+                }
+                if (readTail == tail.Length && ArchiveScanner.LooksLikeDmg(tail))
+                    rootType = "DMG";
+            }
+
+            var signatureFileType = rootType.Equals("Unknown", StringComparison.OrdinalIgnoreCase) ? "OTHER" : rootType;
+            var applicableRawNdb = ndbSignatures
+                .Where(x => x.MacroGroup is null && LdbRuntime.TargetMatchesFileType(x.Target, signatureFileType))
+                .ToArray();
+            var streamableNdb = applicableRawNdb.Where(x => ScanTypePolicy.CanStreamRawNdb(x, signatureFileType)).ToHashSet();
+            // Only an applicable, non-streamable NDB rule can require the expensive
+            // second pass. Macro NDB entries are logical-signature ingredients and are
+            // already covered when logical signatures are evaluated.
+            var requiresFullNdbEvaluation = applicableRawNdb.Any(x => !streamableNdb.Contains(x));
+            var requiresContainerExpansion = ScanTypePolicy.IsArchiveContainer(rootType);
+            var requiresMachOFat = ScanTypePolicy.IsMachO(rootType) && ScanTypePolicy.LooksLikeMachOFat(probe);
+            var requiresSpecializedPreRaw = ScanTypePolicy.RequiresSpecializedPreRaw(rootType) &&
+                                            (!(rootType.Equals("HTML", StringComparison.OrdinalIgnoreCase) ||
+                                               rootType.Equals("HTML_UTF16", StringComparison.OrdinalIgnoreCase)) ||
+                                             info.Length <= options.Limits.MaxHtmlNormalize);
+
+            // ClamAV runs container/document parsers before the ordinary raw scan for
+            // these types. Because our managed archive layer needs a materialized span,
+            // load it once, scan the container first, and reuse the same bytes for the
+            // raw matcher and later target-specific passes. PE/ELF/Mach-O keep the raw-
+            // first path, matching cli_magic_scan()'s executable ordering.
+            var requiresPeFullBuffer = peImportRules.Length != 0 && ScanTypePolicy.IsPe(rootType);
+            var requiresLogicalFullBuffer = HasApplicableLogicalSignatures(
+                logicalSignatures,
+                signatureFileType,
+                info.Length);
+            var needsFullBuffer = requiresLogicalFullBuffer || requiresFullNdbEvaluation ||
+                                  requiresPeFullBuffer || requiresContainerExpansion ||
+                                  requiresMachOFat || requiresSpecializedPreRaw ||
+                                  options.ContentScanners.Count != 0;
+            byte[]? fullData = null;
+            var containerPreScanned = false;
+            var detections = new List<Detection>();
+
+            if (needsFullBuffer && info.Length > options.Limits.MaxFullBufferSize)
+                return new ScanResult(ScanVerdict.Error, path, rootType, [], 0, started.Elapsed, state.Database.Databases.FirstOrDefault());
+
+            if (requiresContainerExpansion)
+            {
+                fullData = await ReadFullFileAsync(path, info.Length, cancellationToken);
+                var fullRootType = DetectType(fullData, path, state.Database.SpecialDatabases.FileTypes);
+                if (!string.Equals(rootType, fullRootType, StringComparison.OrdinalIgnoreCase))
+                {
+                    rootType = fullRootType;
+                    signatureFileType = rootType.Equals("Unknown", StringComparison.OrdinalIgnoreCase) ? "OTHER" : rootType;
+                }
+                requiresMachOFat = ScanTypePolicy.IsMachO(rootType) && ScanTypePolicy.LooksLikeMachOFat(fullData);
+
+                if (state.Compiled.MatchesFalsePositive(fullData))
+                    return new ScanResult(ScanVerdict.Trusted, path, rootType, [], info.Length, started.Elapsed, state.Database.Databases.FirstOrDefault());
+
+                detections.AddRange(ArchiveScanner.Scan(fullData, path, state, options, [], 0, cancellationToken, rootType));
+                containerPreScanned = true;
+                if (!options.CollectAllMatches && detections.Count != 0)
+                    return new ScanResult(ScanVerdict.Malicious, path, rootType, detections.Take(1).ToArray(), info.Length, started.Elapsed, state.Database.Databases.FirstOrDefault());
+            }
+
+            if (requiresSpecializedPreRaw)
+            {
+                if (fullData is null)
+                    fullData = await ReadFullFileAsync(path, info.Length, cancellationToken);
+
+                detections.AddRange(SpecializedFileHandlers.ScanPreRaw(
+                    fullData, rootType, state, options, path, cancellationToken));
+                if (!options.CollectAllMatches && detections.Count != 0)
+                    return new ScanResult(ScanVerdict.Malicious, path, rootType, detections.Take(1).ToArray(), info.Length, started.Elapsed, state.Database.Databases.FirstOrDefault());
+            }
+
+            // Keep the non-container raw path stream-based. This mirrors ClamAV's
+            // file-map based scan and avoids materializing large ordinary files just
+            // because the engine has raw signatures loaded.
+            using var mapped = MemoryMappedFile.CreateFromFile(path, FileMode.Open, null, 0, MemoryMappedFileAccess.Read);
+            await using var input = mapped.CreateViewStream(0, info.Length, MemoryMappedFileAccess.Read);
+
+            (IReadOnlyList<Detection> Detections, bool Trusted, long BytesRead) rawMatch;
+            if (fullData is not null && requiresContainerExpansion)
+            {
+                // The container bytes are already resident. Re-reading them through a
+                // second file stream would only add I/O. The normal raw matcher remains
+                // the same compiled AC/BM/hash engine used by the streaming path.
+                rawMatch = (state.Compiled.Match(
+                    fullData,
+                    "compiled-database",
+                    includeNdb: false,
+                    collectAllMatches: options.CollectAllMatches),
+                    false,
+                    info.Length);
+            }
+            else
+            {
+                rawMatch = await state.Compiled.MatchStreamAsync(
+                    input,
+                    options.Limits.StreamChunkSize,
+                    options.Limits.MaxFlexibleLookbehind,
+                    "compiled-database",
+                    cancellationToken,
+                    includeNdb: streamableNdb.Count != 0,
+                    collectAllMatches: options.CollectAllMatches,
+                    ndbFilter: streamableNdb.Count == 0 ? null : streamableNdb.Contains);
+            }
+
+            if (rawMatch.Trusted)
+            {
+                // .fp/.sfp matched the root layer. ClamAV converts this to CL_VERIFIED,
+                // clears prior evidence, and skips child/container scanning.
+                return new ScanResult(ScanVerdict.Trusted, path, rootType, [], rawMatch.BytesRead, started.Elapsed, state.Database.Databases.FirstOrDefault());
+            }
+
+            detections.AddRange(rawMatch.Detections);
+            if (!options.CollectAllMatches && detections.Count != 0)
+                return new ScanResult(ScanVerdict.Malicious, path, rootType, detections.Take(1).ToArray(), rawMatch.BytesRead, started.Elapsed, state.Database.Databases.FirstOrDefault());
+
+            var specializedRules = peSectionRules.Length != 0 || peImportRules.Length != 0;
+            // PE section hashes are streamed section-by-section. Import hashes still
+            // require a structurally complete PE image, so only .imp forces a whole
+            // file materialization here.
+            if (needsFullBuffer)
+            {
+                if (fullData is null)
+                    fullData = await ReadFullFileAsync(path, info.Length, cancellationToken);
+
+                var logicalType = DetectType(fullData, path, state.Database.SpecialDatabases.FileTypes);
+                signatureFileType = logicalType.Equals("Unknown", StringComparison.OrdinalIgnoreCase)
+                    ? "OTHER"
+                    : logicalType;
+
+                if (logicalSignatures.Length != 0 || ndbSignatures.Length != 0)
+                {
+                    IEnumerable<NdbSignature> materializedNdb = ndbSignatures
+                        .Where(x => x.MacroGroup is null &&
+                                    LdbRuntime.TargetMatchesFileType(x.Target, signatureFileType));
+                    if (!containerPreScanned)
+                        materializedNdb = materializedNdb.Where(x => !streamableNdb.Contains(x));
+
+                    detections.AddRange(EvaluateNdb(
+                        materializedNdb,
+                        fullData,
+                        options.Limits,
+                        signatureFileType,
+                        cancellationToken));
+                    if (!options.CollectAllMatches && detections.Count != 0)
+                        return new ScanResult(ScanVerdict.Malicious, path, rootType, detections.Take(1).ToArray(), rawMatch.BytesRead, started.Elapsed, state.Database.Databases.FirstOrDefault());
+                    detections.AddRange(EvaluateLogical(logicalSignatures, ndbSignatures, fullData, options.Limits, signatureFileType, state.Database.IconDatabase, [], cancellationToken, scanState: state, scanOptions: options));
+                    if (!options.CollectAllMatches && detections.Count != 0)
+                        return new ScanResult(ScanVerdict.Malicious, path, rootType, detections.Take(1).ToArray(), rawMatch.BytesRead, started.Elapsed, state.Database.Databases.FirstOrDefault());
+                }
+                if (specializedRules)
+                {
+                    if (ScanTypePolicy.IsPe(rootType))
+                        detections.AddRange(PeSpecializedMatcher.Match(fullData, state, options.Limits, cancellationToken));
+                    if (!options.CollectAllMatches && detections.Count != 0)
+                        return new ScanResult(ScanVerdict.Malicious, path, rootType, detections.Take(1).ToArray(), rawMatch.BytesRead, started.Elapsed, state.Database.Databases.FirstOrDefault());
+                }
+                foreach (var contentScanner in options.ContentScanners)
+                {
+                    detections.AddRange(contentScanner.Scan(fullData, path, cancellationToken));
+                    if (!options.CollectAllMatches && detections.Count != 0)
+                        return new ScanResult(ScanVerdict.Malicious, path, rootType, detections.Take(1).ToArray(), rawMatch.BytesRead, started.Elapsed, state.Database.Databases.FirstOrDefault());
+                }
+                if (ScanTypePolicy.IsPe(rootType))
+                {
+                    detections.AddRange(ScanPeOverlay(fullData, state, options, cancellationToken));
+                    if (!options.CollectAllMatches && detections.Count != 0)
+                        return new ScanResult(ScanVerdict.Malicious, path, rootType, detections.Take(1).ToArray(), rawMatch.BytesRead, started.Elapsed, state.Database.Databases.FirstOrDefault());
+                }
+                if (requiresMachOFat)
+                {
+                    detections.AddRange(ScanMachOFatSlices(fullData, state, options, cancellationToken));
+                    if (!options.CollectAllMatches && detections.Count != 0)
+                        return new ScanResult(ScanVerdict.Malicious, path, rootType, detections.Take(1).ToArray(), rawMatch.BytesRead, started.Elapsed, state.Database.Databases.FirstOrDefault());
+                }
+                if (requiresContainerExpansion && !containerPreScanned)
+                {
+                    detections.AddRange(ArchiveScanner.Scan(fullData, path, state, options, [], 0, cancellationToken));
+                    if (!options.CollectAllMatches && detections.Count != 0)
+                        return new ScanResult(ScanVerdict.Malicious, path, rootType, detections.Take(1).ToArray(), rawMatch.BytesRead, started.Elapsed, state.Database.Databases.FirstOrDefault());
+                }
+            }
+
+            if (fullData is null && ScanTypePolicy.IsPe(rootType) && peSectionRules.Length != 0)
+            {
+                var sectionHits = await PeSpecializedMatcher.MatchSectionsFromFileAsync(path, info.Length, peSectionRules, options.Limits.MaxPatternMatchesPerSignature, cancellationToken);
+                detections.AddRange(sectionHits);
+                if (!options.CollectAllMatches && detections.Count != 0)
+                    return new ScanResult(ScanVerdict.Malicious, path, rootType, detections.Take(1).ToArray(), rawMatch.BytesRead, started.Elapsed, state.Database.Databases.FirstOrDefault());
+            }
+
+            if (fullData is null && ScanTypePolicy.IsPe(rootType))
+            {
+                var overlayHits = await ScanPeOverlayFromFileAsync(path, info.Length, state, options, cancellationToken);
+                detections.AddRange(overlayHits);
+                if (!options.CollectAllMatches && detections.Count != 0)
+                    return new ScanResult(ScanVerdict.Malicious, path, rootType, detections.Take(1).ToArray(), rawMatch.BytesRead, started.Elapsed, state.Database.Databases.FirstOrDefault());
+            }
+
+            var distinct = detections
+                .GroupBy(x => x.Name, StringComparer.OrdinalIgnoreCase)
+                .Select(x => x.First())
+                .ToArray();
+
+            var verdict = rawMatch.Trusted && distinct.Length == 0
+                ? ScanVerdict.Trusted
+                : distinct.Length == 0 ? ScanVerdict.Clean : ScanVerdict.Malicious;
+
+            return new ScanResult(verdict, path, rootType, distinct, rawMatch.BytesRead, started.Elapsed, state.Database.Databases.FirstOrDefault());
+        }
+        catch (OperationCanceledException)
+        {
+            return new ScanResult(ScanVerdict.Timeout, path, DetectType(path), [], 0, started.Elapsed, _databaseManager.Current.Database.Databases.FirstOrDefault());
+        }
+        catch (IOException)
+        {
+            return new ScanResult(ScanVerdict.Error, path, DetectType(path), [], 0, started.Elapsed, _databaseManager.Current.Database.Databases.FirstOrDefault());
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return new ScanResult(ScanVerdict.Error, path, DetectType(path), [], 0, started.Elapsed, _databaseManager.Current.Database.Databases.FirstOrDefault());
+        }
+    }
+
+    private static bool HasApplicableLogicalSignatures(
+        IReadOnlyList<LogicalSignature> signatures,
+        string fileType,
+        long fileSize)
+    {
+        foreach (var signature in signatures)
+        {
+            var target = signature.Target;
+            if (target is null)
+                return true;
+            if (target.Target != 0 && !LdbRuntime.TargetMatchesFileType(target.Target, fileType))
+                continue;
+            if (target.MinFileSize is not null && fileSize < target.MinFileSize.Value)
+                continue;
+            if (target.MaxFileSize is not null && fileSize > target.MaxFileSize.Value)
+                continue;
+
+            // A concrete container/intermediate constraint cannot match the root
+            // layer, which has no parent chain. Avoid materializing the root merely
+            // because such a nested-only rule exists. Nested layers are already
+            // materialized by their archive/container handlers.
+            if (target.Container is not null &&
+                !target.Container.Equals("ANY", StringComparison.OrdinalIgnoreCase))
+                continue;
+            if (target.Intermediates is not null && target.Intermediates.Count != 0)
+                continue;
+
+            return true;
+        }
+        return false;
+    }
+
+    private static async Task<byte[]> ReadFullFileAsync(string path, long length, CancellationToken cancellationToken)
+    {
+        if (length < 0 || length > int.MaxValue)
+            throw new InvalidDataException("File is too large to materialize in the managed scan path.");
+
+        await using var input = File.OpenRead(path);
+        using var buffer = new MemoryStream((int)length);
+        await input.CopyToAsync(buffer, cancellationToken);
+        return buffer.ToArray();
+    }
+
+    private ScanOptions CreateEffectiveOptions(ScanOptions options)
+    {
+        var effective = new ScanOptions
+        {
+            CollectAllMatches = options.CollectAllMatches,
+            Limits = options.Limits,
+            YaraRuleDirectory = options.YaraRuleDirectory,
+            BytecodeDirectory = options.BytecodeDirectory
+        };
+        foreach (var scanner in options.ContentScanners) effective.ContentScanners.Add(scanner);
+        if (!string.IsNullOrWhiteSpace(options.YaraRuleDirectory)
+            && !effective.ContentScanners.OfType<YaraContentScanner>().Any(x => string.Equals(x.Directory, options.YaraRuleDirectory, StringComparison.OrdinalIgnoreCase)))
+        {
+            var directory = Path.GetFullPath(options.YaraRuleDirectory);
+            var key = "yara:" + directory;
+            var scanner = _optionalScannerCache.GetOrAdd(key, _ => new Lazy<IContentScanner>(() => new YaraContentScanner(directory), LazyThreadSafetyMode.ExecutionAndPublication)).Value;
+            effective.ContentScanners.Add(scanner);
+        }
+        if (!string.IsNullOrWhiteSpace(options.BytecodeDirectory)
+            && !effective.ContentScanners.OfType<BytecodeContentScanner>().Any(x => string.Equals(x.Directory, options.BytecodeDirectory, StringComparison.OrdinalIgnoreCase)))
+        {
+            var directory = Path.GetFullPath(options.BytecodeDirectory);
+            var key = "bytecode:" + directory;
+            var scanner = _optionalScannerCache.GetOrAdd(key, _ => new Lazy<IContentScanner>(() => new BytecodeContentScanner(directory), LazyThreadSafetyMode.ExecutionAndPublication)).Value;
+            effective.ContentScanners.Add(scanner);
+        }
+        return effective;
+    }
+
+    private static async Task<IReadOnlyList<Detection>> ScanPeOverlayFromFileAsync(
+        string path,
+        long fileLength,
+        CompiledState state,
+        ScanOptions options,
+        CancellationToken cancellationToken)
+    {
+        if (fileLength <= 0) return [];
+
+        var prefixLength = (int)Math.Min(fileLength, 4L * 1024 * 1024);
+        var prefix = new byte[prefixLength];
+        await using (var input = File.OpenRead(path))
+        {
+            var read = 0;
+            while (read < prefix.Length)
+            {
+                var n = await input.ReadAsync(prefix.AsMemory(read), cancellationToken);
+                if (n == 0) break;
+                read += n;
+            }
+            if (read != prefix.Length) prefix = prefix[..read];
+        }
+
+        if (!PeSpecializedMatcher.TryGetOverlayRange(prefix, fileLength, out var overlayOffset, out var overlaySize) ||
+            overlaySize <= 0 || overlaySize > options.Limits.MaxEmbeddedStreamSize ||
+            overlaySize > int.MaxValue)
+            return [];
+
+        var overlay = new byte[(int)overlaySize];
+        await using (var input = File.OpenRead(path))
+        {
+            input.Position = overlayOffset;
+            var read = 0;
+            while (read < overlay.Length)
+            {
+                var n = await input.ReadAsync(overlay.AsMemory(read), cancellationToken);
+                if (n == 0) return [];
+                read += n;
+            }
+        }
+
+        return ScanPeOverlay(overlay, state, options, cancellationToken);
+    }
+
+    internal static ScanResult ScanBuffer(byte[] buffer, int length, CompiledState state, ScanOptions options, string path, CancellationToken cancellationToken)
+    {
+        var data = buffer.AsSpan(0, length);
+        var fileType = DetectType(data, path, state.Database.SpecialDatabases.FileTypes);
+        var detections = new List<Detection>();
+        if (ScanTypePolicy.RequiresSpecializedPreRaw(fileType))
+        {
+            detections.AddRange(SpecializedFileHandlers.ScanPreRaw(data, fileType, state, options, path, cancellationToken));
+            if (!options.CollectAllMatches && detections.Count != 0)
+                return new ScanResult(ScanVerdict.Malicious, path, fileType, [detections[0]], length, TimeSpan.Zero, state.Database.Databases.FirstOrDefault());
+        }
+        detections.AddRange(state.Compiled.Match(data, "compiled-database", includeNdb: false, collectAllMatches: options.CollectAllMatches));
+        var ndb = state.Database.Signatures.OfType<NdbSignature>().ToArray();
+        detections.AddRange(EvaluateNdb(ndb, data, options.Limits, fileType, cancellationToken));
+        detections.AddRange(EvaluateLogical(state.Database.Signatures.OfType<LogicalSignature>(), ndb, data, options.Limits, fileType, state.Database.IconDatabase, [], cancellationToken, scanState: state, scanOptions: options));
+        if (ScanTypePolicy.IsPe(fileType))
+            detections.AddRange(PeSpecializedMatcher.Match(data, state, options.Limits, cancellationToken));
+        foreach (var contentScanner in options.ContentScanners)
+            detections.AddRange(contentScanner.Scan(data, path, cancellationToken));
+        if (ScanTypePolicy.IsPe(fileType))
+            detections.AddRange(ScanPeOverlay(data.ToArray(), state, options, cancellationToken));
+        if (ScanTypePolicy.IsMachO(fileType) && ScanTypePolicy.LooksLikeMachOFat(data))
+            detections.AddRange(ScanMachOFatSlices(buffer, length, state, options, cancellationToken));
+        if (ScanTypePolicy.IsArchiveContainer(fileType))
+            detections.AddRange(ArchiveScanner.Scan(data, path, state, options, [], 0, cancellationToken));
+        var distinct = detections.GroupBy(x => x.Name, StringComparer.OrdinalIgnoreCase).Select(x => x.First()).ToArray();
+        var trusted = state.Compiled.MatchesFalsePositive(data);
+        if (trusted && distinct.Length == 0)
+            return new ScanResult(ScanVerdict.Trusted, path, fileType, distinct, length, TimeSpan.Zero, state.Database.Databases.FirstOrDefault());
+        var verdict = distinct.Length == 0 ? ScanVerdict.Clean : ScanVerdict.Malicious;
+        return new ScanResult(verdict, path, fileType, distinct, length, TimeSpan.Zero, state.Database.Databases.FirstOrDefault());
+    }
+
+    private static IReadOnlyList<Detection> ScanPeOverlay(
+        ReadOnlySpan<byte> data,
+        CompiledState state,
+        ScanOptions options,
+        CancellationToken cancellationToken)
+    {
+        if (!PeSpecializedMatcher.TryGetOverlay(data, out var overlay, out var overlayOffset))
+            return [];
+        if (overlay.Length == 0 || overlay.Length > options.Limits.MaxEmbeddedStreamSize)
+            return [];
+        if (state.Compiled.MatchesFalsePositive(overlay))
+            return [];
+
+        var parentTypes = new[] { "PE" };
+        var path = $"overlay@{overlayOffset}";
+        var fileType = DetectType(overlay, path, state.Database.SpecialDatabases.FileTypes);
+        var results = new List<Detection>();
+
+        foreach (var hit in state.Compiled.Match(overlay, path, includeNdb: false))
+            results.Add(hit.Offset is null ? hit : hit with { Offset = hit.Offset.Value + overlayOffset });
+
+        var ndb = state.Database.Signatures.OfType<NdbSignature>().ToArray();
+        foreach (var hit in EvaluateNdb(ndb, overlay, options.Limits, fileType, cancellationToken))
+            results.Add(hit.Offset is null ? hit : hit with { Offset = hit.Offset.Value + overlayOffset });
+
+        foreach (var hit in EvaluateLogical(state.Database.Signatures.OfType<LogicalSignature>(), ndb, overlay, options.Limits, fileType, state.Database.IconDatabase, parentTypes, cancellationToken, scanState: state, scanOptions: options))
+            results.Add(hit.Offset is null ? hit : hit with { Offset = hit.Offset.Value + overlayOffset });
+
+        if (ScanTypePolicy.IsPe(fileType))
+        {
+            foreach (var hit in PeSpecializedMatcher.Match(overlay, state, options.Limits, cancellationToken))
+                results.Add(hit.Offset is null ? hit : hit with { Offset = hit.Offset.Value + overlayOffset });
+        }
+
+        foreach (var contentScanner in options.ContentScanners)
+        {
+            foreach (var hit in contentScanner.Scan(overlay, path, cancellationToken))
+                results.Add(hit.Offset is null ? hit : hit with { Offset = hit.Offset.Value + overlayOffset });
+        }
+
+        if (ScanTypePolicy.IsArchiveContainer(fileType))
+            results.AddRange(ArchiveScanner.Scan(overlay, path, state, options, parentTypes, 1, cancellationToken));
+
+        return results;
+    }
+
+    private static IReadOnlyList<Detection> ScanMachOFatSlices(
+        byte[] data,
+        CompiledState state,
+        ScanOptions options,
+        CancellationToken cancellationToken)
+        => ScanMachOFatSlices(data, data.Length, state, options, cancellationToken);
+
+    private static IReadOnlyList<Detection> ScanMachOFatSlices(
+        byte[] data,
+        int length,
+        CompiledState state,
+        ScanOptions options,
+        CancellationToken cancellationToken)
+    {
+        if (length <= 0) return [];
+        var whole = data.AsSpan(0, length);
+        var slices = LdbRuntime.GetMachOFatSlices(whole);
+        if (slices.Count == 0) return [];
+
+        var results = new List<Detection>();
+        var ndb = state.Database.Signatures.OfType<NdbSignature>().ToArray();
+        var logical = state.Database.Signatures.OfType<LogicalSignature>().ToArray();
+
+        foreach (var (offset, sliceLength) in slices)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var slice = data.AsSpan(offset, sliceLength);
+            if (state.Compiled.MatchesFalsePositive(slice))
+                continue;
+            var type = DetectType(slice, "embedded.macho", state.Database.SpecialDatabases.FileTypes);
+
+            foreach (var hit in state.Compiled.Match(slice, $"mach-o-slice@{offset}", includeNdb: false))
+                results.Add(hit.Offset is null
+                    ? hit
+                    : hit with { Offset = hit.Offset.Value + offset });
+
+            foreach (var hit in EvaluateNdb(ndb, slice, options.Limits, type, cancellationToken))
+                results.Add(hit.Offset is null
+                    ? hit
+                    : hit with { Offset = hit.Offset.Value + offset });
+
+            foreach (var hit in EvaluateLogical(logical, ndb, slice, options.Limits, type, state.Database.IconDatabase, ["MACHO_UNIBIN"], cancellationToken, scanState: state, scanOptions: options))
+                results.Add(hit.Offset is null
+                    ? hit
+                    : hit with { Offset = hit.Offset.Value + offset });
+
+            if (ScanTypePolicy.IsPe(type))
+            {
+                foreach (var hit in PeSpecializedMatcher.Match(slice, state, options.Limits, cancellationToken))
+                    results.Add(hit.Offset is null
+                        ? hit
+                        : hit with { Offset = hit.Offset.Value + offset });
+            }
+
+            foreach (var contentScanner in options.ContentScanners)
+            {
+                foreach (var hit in contentScanner.Scan(slice, $"mach-o-slice@{offset}", cancellationToken))
+                    results.Add(hit.Offset is null
+                        ? hit
+                        : hit with { Offset = hit.Offset.Value + offset });
+            }
+        }
+
+        return results;
+    }
+
+    internal static IReadOnlyList<Detection> EvaluateNdb(
+        IEnumerable<NdbSignature> signatures,
+        ReadOnlySpan<byte> data,
+        ScanLimits limits,
+        string fileType,
+        CancellationToken cancellationToken)
+    {
+        var results = new List<Detection>();
+        if (data.IsEmpty) return results;
+
+        foreach (var signature in signatures)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (signature.MacroGroup is not null)
+                continue; // Macro members are consumed by LDB macro subsignatures, not alerts.
+
+            var normalized = NormalizeTargetData(data, fileType, signature.Target);
+            ReadOnlySpan<byte> scanData = data;
+            if (normalized is not null) scanData = normalized;
+            var context = LdbRuntime.CreateContext(scanData, fileType);
+            if (!LdbRuntime.TargetMatchesFileType(signature.Target, context))
+                continue;
+
+            var content = new ContentSignature(
+                signature.Name,
+                SignatureType.Ndb,
+                signature.SourceFile,
+                signature.Pattern,
+                signature.OffsetExpression);
+            var matches = FindContentMatches(content, scanData, context, limits.MaxPatternMatchesPerSignature);
+            if (matches.Count == 0)
+                continue;
+
+            results.Add(new Detection(
+                signature.Name,
+                SignatureType.Ndb,
+                matches[0],
+                signature.SourceFile,
+                $"NDB target {signature.Target} content pattern matched."));
+        }
+        return results;
+    }
+
+    internal static IReadOnlyList<Detection> EvaluateLogical(
+        IEnumerable<LogicalSignature> signatures,
+        IEnumerable<NdbSignature> ndbSignatures,
+        ReadOnlySpan<byte> data,
+        ScanLimits limits,
+        string fileType,
+        IconDatabase? iconDatabase,
+        IReadOnlyList<string> parentTypes,
+        CancellationToken cancellationToken,
+        bool retyped = false,
+        CompiledState? scanState = null,
+        ScanOptions? scanOptions = null)
+    {
+        var results = new List<Detection>();
+        var baseContext = LdbRuntime.CreateContext(data, fileType, parentTypes, retyped);
+        var macroMembers = ndbSignatures
+            .Where(static x => x.MacroGroup is not null)
+            .GroupBy(x => x.MacroGroup!.Value)
+            .ToDictionary(x => x.Key, x => x.ToArray());
+
+        // ClamAV stores the most recent match for each macro group. Pre-compute
+        // those positions so LDB content subsignatures using $N$ can resolve
+        // the same absolute anchor before the logical expression is evaluated.
+        var macroPositions = new Dictionary<int, List<int>>();
+        foreach (var pair in macroMembers)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var positions = new List<int>();
+            foreach (var member in pair.Value)
+            {
+                var normalized = NormalizeTargetData(data, fileType, member.Target);
+                ReadOnlySpan<byte> memberData = data;
+                if (normalized is not null) memberData = normalized;
+                var memberContext = normalized is null ? baseContext : LdbRuntime.CreateContext(memberData, fileType, parentTypes, retyped);
+                if (!LdbRuntime.TargetMatchesFileType(member.Target, memberContext))
+                    continue;
+                // In an NDB macro member the $N$ offset is a group marker, not a file offset.
+                var memberMatches = FindContentMatches(
+                    new ContentSignature(member.Name, SignatureType.Ndb, member.SourceFile, member.Pattern, "*"),
+                    memberData, memberContext, limits.MaxPatternMatchesPerSignature);
+                positions.AddRange(memberMatches);
+            }
+            if (positions.Count != 0)
+                macroPositions[pair.Key] = positions.Distinct().OrderBy(static x => x).ToList();
+        }
+
+        foreach (var signature in signatures)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var target = signature.Target;
+            var normalized = NormalizeTargetData(data, fileType, target?.Target ?? 0);
+            ReadOnlySpan<byte> matchData = data;
+            if (normalized is not null) matchData = normalized;
+            var context = normalized is null ? baseContext : LdbRuntime.CreateContext(matchData, fileType, parentTypes, retyped);
+            if (!LdbRuntime.MatchesTarget(target, context))
+                continue;
+
+            var indexMap = new Dictionary<int, ContentSignature>();
+            foreach (var sub in signature.SubSignatures)
+                indexMap[GetSubsigIndex(sub)] = sub;
+
+            var maxIndex = signature.SubSignatures.Select(GetSubsigIndex).DefaultIfEmpty(-1).Max();
+            if (signature.MacroSubSignatures is not null && signature.MacroSubSignatures.Count != 0)
+                maxIndex = Math.Max(maxIndex, signature.MacroSubSignatures.Keys.Max());
+            if (signature.RegexSubSignatures is not null && signature.RegexSubSignatures.Count != 0)
+                maxIndex = Math.Max(maxIndex, signature.RegexSubSignatures.Keys.Max());
+            if (signature.ByteCompareSubSignatures is not null && signature.ByteCompareSubSignatures.Count != 0)
+                maxIndex = Math.Max(maxIndex, signature.ByteCompareSubSignatures.Keys.Max());
+            if (signature.FuzzyImageSubSignatures is not null && signature.FuzzyImageSubSignatures.Count != 0)
+                maxIndex = Math.Max(maxIndex, signature.FuzzyImageSubSignatures.Keys.Max());
+            if (maxIndex < 0 || maxIndex >= 64)
+                continue;
+
+            var matches = Enumerable.Range(0, maxIndex + 1).Select(static i => new SubsigMatches(i)).ToArray();
+
+            foreach (var (index, sub) in indexMap)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                matches[index].Positions.AddRange(FindContentMatches(sub, matchData, context, limits.MaxPatternMatchesPerSignature, macroPositions));
+            }
+
+            if (signature.MacroSubSignatures is not null)
+            {
+                foreach (var pair in signature.MacroSubSignatures)
+                {
+                    var index = pair.Key;
+                    var spec = pair.Value;
+                    if (index <= 0 || index >= matches.Length || !macroMembers.TryGetValue(spec.MacroGroup, out var members))
+                        continue;
+                    var preceding = matches[index - 1].Positions;
+                    var seen = new SortedSet<int>();
+                    foreach (var previousStart in preceding)
+                    foreach (var member in members)
+                    {
+                        if (!LdbRuntime.TargetMatchesFileType(member.Target, context))
+                            continue;
+                        var memberMatches = FindContentMatches(
+                            new ContentSignature(member.Name, SignatureType.Ndb, member.SourceFile, member.Pattern, "*"),
+                            matchData, context, limits.MaxPatternMatchesPerSignature, macroPositions);
+                        foreach (var memberStart in memberMatches)
+                        {
+                            var delta = memberStart - previousStart;
+                            if (delta >= spec.MinDistance && delta <= spec.MaxDistance)
+                                seen.Add(memberStart);
+                        }
+                    }
+                    var macroMatches = seen.Take(limits.MaxPatternMatchesPerSignature).ToArray();
+                    matches[index].Positions.AddRange(macroMatches);
+                    if (spec.MacroGroup >= 0 && macroMatches.Length != 0)
+                        macroPositions[spec.MacroGroup] = macroMatches.ToList();
+                }
+            }
+
+            if (signature.RegexSubSignatures is not null)
+            {
+                foreach (var pair in signature.RegexSubSignatures.OrderBy(static x => x.Key))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var index = pair.Key;
+                    var regexSub = pair.Value;
+                    if (index >= matches.Length || !ExpressionEvaluator.ValidateReferencesBefore(regexSub.Trigger, index) ||
+                        !TryEvaluateTrigger(regexSub.Trigger, matches, limits.MaxLogicalDepth))
+                        continue;
+                    matches[index].Positions.AddRange(FindRegexMatches(regexSub, matchData, context, limits.MaxPatternMatchesPerSignature));
+                }
+            }
+
+            if (signature.ByteCompareSubSignatures is not null)
+            {
+                foreach (var pair in signature.ByteCompareSubSignatures.OrderBy(static x => x.Key))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var index = pair.Key;
+                    var spec = pair.Value;
+                    if (index >= matches.Length || spec.ReferenceSubSignature < 0 || spec.ReferenceSubSignature >= matches.Length ||
+                        spec.ReferenceSubSignature >= index ||
+                        (signature.RegexSubSignatures?.ContainsKey(spec.ReferenceSubSignature) ?? false) ||
+                        (signature.ByteCompareSubSignatures?.ContainsKey(spec.ReferenceSubSignature) ?? false) ||
+                        matches[spec.ReferenceSubSignature].Positions.Count == 0)
+                        continue;
+                    foreach (var referenceStart in matches[spec.ReferenceSubSignature].Positions.Take(limits.MaxPatternMatchesPerSignature))
+                    {
+                        var valueOffset = referenceStart + spec.Shift;
+                        // ClamAV's byte-compare matcher requires the effective offset
+                        // to be strictly greater than zero.
+                        if (valueOffset <= 0 || !TryReadByteCompareValue(matchData, valueOffset, spec, out var value))
+                            continue;
+                        if (spec.Comparisons.All(c => CompareByteValue(value, c)))
+                            matches[index].Positions.Add(valueOffset);
+                    }
+                    if (matches[index].Positions.Count > limits.MaxPatternMatchesPerSignature)
+                        matches[index].Positions.RemoveRange(limits.MaxPatternMatchesPerSignature, matches[index].Positions.Count - limits.MaxPatternMatchesPerSignature);
+                }
+            }
+
+            if (signature.FuzzyImageSubSignatures is not null)
+            {
+                foreach (var pair in signature.FuzzyImageSubSignatures)
+                {
+                    if (pair.Key < matches.Length && LdbRuntime.FuzzyImageMatches(matchData, pair.Value.Hash))
+                        matches[pair.Key].Positions.Add(0);
+                }
+            }
+
+            bool expressionMatched;
+            try
+            {
+                if (!ExpressionEvaluator.ValidateReferencesBefore(signature.Expression, matches.Length))
+                    continue;
+                expressionMatched = ExpressionEvaluator.Evaluate(signature.Expression, matches, limits.MaxLogicalDepth);
+            }
+            catch (FormatException) { continue; }
+            catch (InvalidDataException) { continue; }
+
+            if (!expressionMatched)
+                continue;
+
+            // HandlerType is a re-typing rule, not a direct detection rule. ClamAV only
+            // invokes the requested handler after the logical expression for this rule
+            // has matched. The retyped pass is protected from recursively retyping itself.
+            if (target?.HandlerType is not null)
+            {
+                // HandlerType is a re-typing rule, not an alert. On the first
+                // layer ClamAV starts a child-style scan using the requested type.
+                // On the retyped layer the RETYPED guard prevents the same rule
+                // from firing again, so the handler rule itself does not become a
+                // detection.
+                if (!context.Retyped && scanState is not null && scanOptions is not null)
+                {
+                    results.AddRange(RescanAsHandlerType(
+                        data,
+                        scanState,
+                        scanOptions,
+                        target.HandlerType,
+                        parentTypes,
+                        cancellationToken));
+                }
+                continue;
+            }
+
+            if ((target?.IconGroup1 is not null || target?.IconGroup2 is not null) &&
+                !LdbRuntime.HasIconGroup(data, context, target!.IconGroup1, target.IconGroup2, iconDatabase))
+                continue;
+
+            results.Add(new Detection(
+                signature.Name,
+                SignatureType.Logical,
+                null,
+                signature.SourceFile,
+                $"Logical expression evaluated true: {signature.Expression}"));
+        }
+        return results;
+    }
+
+    private static IReadOnlyList<Detection> RescanAsHandlerType(
+        ReadOnlySpan<byte> data,
+        CompiledState state,
+        ScanOptions options,
+        string handlerType,
+        IReadOnlyList<string> parentTypes,
+        CancellationToken cancellationToken)
+    {
+        // HandlerType creates a retyped scan layer. Apply FP trust before running the
+        // handler matchers/scanners so a trusted layer produces no evidence.
+        if (state.Compiled.MatchesFalsePositive(data))
+            return [];
+
+        var results = new List<Detection>();
+        var ndb = state.Database.Signatures.OfType<NdbSignature>().ToArray();
+        var logical = state.Database.Signatures.OfType<LogicalSignature>().ToArray();
+
+        // cli_magic_scan() performs the ordinary compiled/raw matcher again on
+        // the retyped fmap before/alongside its type-specific scanners.
+        results.AddRange(state.Compiled.Match(
+            data,
+            $"handler-type:{handlerType}",
+            includeNdb: false));
+
+        results.AddRange(EvaluateNdb(
+            ndb,
+            data,
+            options.Limits,
+            handlerType,
+            cancellationToken));
+
+        results.AddRange(EvaluateLogical(
+            logical,
+            ndb,
+            data,
+            options.Limits,
+            handlerType,
+            state.Database.IconDatabase,
+            parentTypes,
+            cancellationToken,
+            retyped: true,
+            scanState: state,
+            scanOptions: options));
+
+        // Dispatch only the handler requested by the retyping layer. ClamAV's
+        // cli_magic_scan() switches on the active layer type; it does not run the
+        // PE parser on an ELF/ZIP/etc merely because HandlerType exists.
+        if (ScanTypePolicy.IsPe(handlerType))
+            results.AddRange(PeSpecializedMatcher.Match(data, state, options.Limits, cancellationToken));
+
+        foreach (var contentScanner in options.ContentScanners)
+            results.AddRange(contentScanner.Scan(data, $"handler-type:{handlerType}", cancellationToken));
+
+        if (handlerType.Equals("PE", StringComparison.OrdinalIgnoreCase) ||
+            handlerType.Equals("MSEXE", StringComparison.OrdinalIgnoreCase))
+        {
+            results.AddRange(ScanPeOverlay(data.ToArray(), state, options, cancellationToken));
+        }
+
+        if (handlerType.Equals("MACH-O", StringComparison.OrdinalIgnoreCase) ||
+            handlerType.Equals("MACHO_UNIBIN", StringComparison.OrdinalIgnoreCase))
+        {
+            results.AddRange(ScanMachOFatSlices(data.ToArray(), state, options, cancellationToken));
+        }
+
+        // Archive/document handlers are dispatched only for the active handler
+        // type. ArchiveScanner still performs the concrete byte-level subtype
+        // detection before extraction.
+        if (ScanTypePolicy.IsArchiveContainer(handlerType))
+        {
+            results.AddRange(ArchiveScanner.Scan(
+                data,
+                $"handler-type.{handlerType}",
+                state,
+                options,
+                parentTypes,
+                parentTypes.Count + 1,
+                cancellationToken));
+        }
+
+        return results;
+    }
+
+    private static List<int> FindContentMatches(ContentSignature signature, ReadOnlySpan<byte> data, LdbScanContext context, int maxMatches, IReadOnlyDictionary<int, List<int>>? macroPositions = null)
+    {
+        if (maxMatches <= 0 || data.IsEmpty)
+            return [];
+        var patterns = new List<HexPattern>(2);
+        // ClamAV's `w` creates a wide pattern, while `a` requests the ASCII
+        // variant in addition to wide when both are present.
+        if (!signature.MatchOptions.HasFlag(ContentMatchOptions.Wide) || signature.MatchOptions.HasFlag(ContentMatchOptions.Ascii))
+            patterns.Add(signature.Pattern);
+        if (signature.MatchOptions.HasFlag(ContentMatchOptions.Wide))
+            patterns.Add(signature.Pattern.ToWideVariant());
+        if (patterns.Count == 0) patterns.Add(signature.Pattern);
+        var ranges = LdbRuntime.ResolveOffset(signature.OffsetExpression, context, macroPositions: macroPositions);
+        var results = new List<int>();
+        var options = new PatternMatchOptions(signature.MatchOptions.HasFlag(ContentMatchOptions.IgnoreCase), signature.MatchOptions.HasFlag(ContentMatchOptions.FullWord));
+        foreach (var range in ranges)
+        {
+            var start = Math.Clamp(range.Start, 0, data.Length);
+            // A zero-length EOF/EOF-n anchor at file.Length is a valid calculated
+            // offset, but it cannot contain a content pattern.
+            if (start >= data.Length)
+                continue;
+            var end = Math.Clamp(range.EndInclusive, start, data.Length - 1);
+            foreach (var pattern in patterns)
+            {
+                var last = pattern.MaxLength == int.MaxValue ? end : Math.Min(end, data.Length - Math.Max(1, pattern.MinLength));
+                for (var pos = start; pos <= last && pos < data.Length; pos++)
+                {
+                    if (!pattern.Matches(data, pos, out var consumed, options)) continue;
+                    if (consumed <= 0 || (long)pos + consumed > (long)end + 1) continue;
+                    results.Add(pos);
+                    if (results.Count >= maxMatches) return results;
+                }
+            }
+        }
+        return results;
+    }
+
+    private static byte[]? NormalizeTargetData(ReadOnlySpan<byte> data, string fileType, int target)
+    {
+        if (target == 3 && fileType.Equals("HTML", StringComparison.OrdinalIgnoreCase))
+            return NormalizeHtml(data);
+        if (target == 3 && fileType.Equals("HTML_UTF16", StringComparison.OrdinalIgnoreCase))
+        {
+            var text = DecodeUtf16Text(data);
+            return text is null ? null : NormalizeHtml(Encoding.Latin1.GetBytes(text));
+        }
+        if (target == 7 && fileType.Equals("ASCII", StringComparison.OrdinalIgnoreCase))
+            return NormalizeAscii(data);
+        return null;
+    }
+
+    private static string? DecodeUtf16Text(ReadOnlySpan<byte> data)
+    {
+        if (data.Length < 4) return null;
+        try
+        {
+            if (data[0] == 0xff && data[1] == 0xfe)
+                return Encoding.Unicode.GetString(data[2..]);
+            if (data[0] == 0xfe && data[1] == 0xff)
+                return Encoding.BigEndianUnicode.GetString(data[2..]);
+            return null;
+        }
+        catch (DecoderFallbackException) { return null; }
+    }
+
+    private static byte[] NormalizeAscii(ReadOnlySpan<byte> data)
+    {
+        var text = Encoding.Latin1.GetString(data);
+        var normalized = new StringBuilder(text.Length);
+        var pendingSpace = false;
+        foreach (var ch in text)
+        {
+            if (ch is >= '\x21' and <= '\x7e')
+            {
+                if (pendingSpace && normalized.Length != 0) normalized.Append(' ');
+                normalized.Append(char.ToLowerInvariant(ch));
+                pendingSpace = false;
+                continue;
+            }
+            if (ch is ' ' or '\t' or '\r' or '\n' or '\f' or '\v')
+                pendingSpace = normalized.Length != 0;
+            // Other ASCII controls are dropped, matching the same compatibility
+            // objective as ASCII-normalise rather than preserving binary noise.
+        }
+        return Encoding.Latin1.GetBytes(normalized.ToString());
+    }
+
+    private static byte[] NormalizeHtml(ReadOnlySpan<byte> data)
+    {
+        var input = Encoding.Latin1.GetString(data);
+        var withoutComments = new StringBuilder(input.Length);
+        var i = 0;
+        while (i < input.Length)
+        {
+            if (i + 3 < input.Length && input[i] == '<' && input[i + 1] == '!' && input[i + 2] == '-' && input[i + 3] == '-')
+            {
+                var end = input.IndexOf("-->", i + 4, StringComparison.Ordinal);
+                if (end < 0) break;
+                i = end + 3;
+                continue;
+            }
+            withoutComments.Append(input[i++]);
+        }
+
+        var decoded = WebUtility.HtmlDecode(withoutComments.ToString()) ?? string.Empty;
+        var normalized = new StringBuilder(decoded.Length);
+        var pendingSpace = false;
+        foreach (var ch in decoded)
+        {
+            if (ch is >= '\x21' and <= '\x7e')
+            {
+                if (pendingSpace && normalized.Length != 0) normalized.Append(' ');
+                normalized.Append(char.ToLowerInvariant(ch));
+                pendingSpace = false;
+            }
+            else if (char.IsWhiteSpace(ch))
+            {
+                pendingSpace = normalized.Length != 0;
+            }
+        }
+        return Encoding.Latin1.GetBytes(normalized.ToString());
+    }
+
+    private static bool TryEvaluateTrigger(string expression, IReadOnlyList<SubsigMatches> matches, int maxDepth)
+    {
+        try
+        {
+            return ExpressionEvaluator.Evaluate(expression, matches, maxDepth);
+        }
+        catch (FormatException)
+        {
+            return false;
+        }
+        catch (InvalidDataException)
+        {
+            return false;
+        }
+    }
+
+    private static string MakeUngreedyRegex(string pattern)
+    {
+        var sb = new StringBuilder(pattern.Length + 16);
+        var escaped = false;
+        var inClass = false;
+        for (var i = 0; i < pattern.Length; i++)
+        {
+            var c = pattern[i];
+            if (escaped) { sb.Append(c); escaped = false; continue; }
+            if (c == '\\') { sb.Append(c); escaped = true; continue; }
+            if (c == '[') inClass = true;
+            if (c == ']') inClass = false;
+            if (!inClass && (c == '*' || c == '+'))
+            {
+                sb.Append(c);
+                if (i + 1 >= pattern.Length || pattern[i + 1] != '?') sb.Append('?');
+                continue;
+            }
+            if (!inClass && c == '{')
+            {
+                var close = pattern.IndexOf('}', i + 1);
+                if (close > i)
+                {
+                    sb.Append(pattern, i, close - i + 1);
+                    if (close + 1 >= pattern.Length || pattern[close + 1] != '?') sb.Append('?');
+                    i = close;
+                    continue;
+                }
+            }
+            sb.Append(c);
+        }
+        return sb.ToString();
+    }
+
+    private static List<int> FindRegexMatches(LdbRegexSubSignature signature, ReadOnlySpan<byte> data, LdbScanContext context, int maxMatches)
+    {
+        if (maxMatches <= 0 || data.IsEmpty)
+            return [];
+
+        RegexOptions options = RegexOptions.Compiled | RegexOptions.CultureInvariant;
+        if (signature.Flags.Contains('i')) options |= RegexOptions.IgnoreCase;
+        if (signature.Flags.Contains('s')) options |= RegexOptions.Singleline;
+        if (signature.Flags.Contains('m')) options |= RegexOptions.Multiline;
+        if (signature.Flags.Contains('x')) options |= RegexOptions.IgnorePatternWhitespace;
+
+        Regex regex;
+        try
+        {
+            var regexPattern = signature.Flags.Contains('U') ? MakeUngreedyRegex(signature.Pattern) : signature.Pattern;
+            if (signature.Flags.Contains('E'))
+                regexPattern = MakeDollarEndOnlyRegex(regexPattern);
+            regex = new Regex(regexPattern, options, TimeSpan.FromMilliseconds(250));
+        }
+        catch (ArgumentException)
+        {
+            return [];
+        }
+
+        var input = Encoding.Latin1.GetString(data);
+        var ranges = LdbRuntime.ResolveOffset(signature.OffsetExpression, context);
+        if (ranges.Count == 0)
+            return [];
+
+        var rolling = signature.Flags.Contains('r');
+        // ClamAV's r flag is a rolling search modifier and is ignored when the
+        // offset expression already supplies a maximum shift range.
+        var hasMaxShift = signature.OffsetExpression.Contains(",", StringComparison.Ordinal);
+        var global = signature.Flags.Contains('g');
+        var encompass = signature.Flags.Contains('e') && hasMaxShift;
+        var result = new List<int>();
+
+        foreach (var range in ranges)
+        {
+            var start = Math.Clamp(range.Start, 0, data.Length);
+            if (start >= data.Length)
+                continue;
+            var end = Math.Clamp(range.EndInclusive, start, data.Length - 1);
+            // A single-point offset normally anchors the PCRE at that point.
+            // The A flag forces anchoring even for wildcard/shifted offsets.
+            var anchored = signature.Flags.Contains('A') || (!rolling && !hasMaxShift && range.Start == range.EndInclusive);
+            try
+            {
+                var match = regex.Match(input, start);
+                while (match.Success)
+                {
+                    var matchStart = match.Index;
+                    var matchEndExclusive = match.Index + match.Length;
+                    var matchEndInclusive = match.Length == 0 ? match.Index : matchEndExclusive - 1;
+                    var allowed = matchStart >= start && matchStart <= end &&
+                                  (!anchored || matchStart == start) &&
+                                  (!encompass || matchEndInclusive <= end);
+                    if (allowed)
+                    {
+                        result.Add(matchStart);
+                        if (result.Count >= maxMatches || !global)
+                            return result;
+                    }
+                    if (anchored)
+                        break;
+                    var next = match.Index + Math.Max(match.Length, 1);
+                    if (next > end || next > input.Length)
+                        break;
+                    match = regex.Match(input, next);
+                }
+            }
+            catch (RegexMatchTimeoutException) { }
+        }
+        return result;
+    }
+
+    private static string MakeDollarEndOnlyRegex(string pattern)
+    {
+        var sb = new StringBuilder(pattern.Length + 8);
+        var escaped = false;
+        var inClass = false;
+        for (var i = 0; i < pattern.Length; i++)
+        {
+            var c = pattern[i];
+            if (escaped)
+            {
+                sb.Append(c);
+                escaped = false;
+                continue;
+            }
+            if (c == '\\')
+            {
+                sb.Append(c);
+                escaped = true;
+                continue;
+            }
+            if (c == '[') inClass = true;
+            if (c == ']' && inClass) inClass = false;
+            if (c == '$' && !inClass)
+                sb.Append("\\z");
+            else
+                sb.Append(c);
+        }
+        return sb.ToString();
+    }
+
+    private static bool TryReadByteCompareValue(
+        ReadOnlySpan<byte> data,
+        int offset,
+        LdbByteCompareSubSignature spec,
+        out long value)
+    {
+        value = 0;
+        if (offset < 0 || offset >= data.Length || spec.ByteLength <= 0)
+            return false;
+
+        var available = data.Length - offset;
+        var requested = spec.ByteLength;
+        var take = Math.Min(available, requested);
+        if (spec.Options.HasFlag(ByteCompareOptions.Exact) && take != requested)
+            return false;
+
+        var bytes = data.Slice(offset, take);
+        if (spec.Options.HasFlag(ByteCompareOptions.Binary))
+        {
+            if (take != requested || take is not (1 or 2 or 4 or 8))
+                return false;
+            ulong raw = spec.Options.HasFlag(ByteCompareOptions.LittleEndian) ? take switch
+            {
+                1 => bytes[0],
+                2 => BinaryPrimitives.ReadUInt16LittleEndian(bytes),
+                4 => BinaryPrimitives.ReadUInt32LittleEndian(bytes),
+                8 => BinaryPrimitives.ReadUInt64LittleEndian(bytes),
+                _ => 0UL
+            } : take switch
+            {
+                1 => bytes[0],
+                2 => BinaryPrimitives.ReadUInt16BigEndian(bytes),
+                4 => BinaryPrimitives.ReadUInt32BigEndian(bytes),
+                8 => BinaryPrimitives.ReadUInt64BigEndian(bytes),
+                _ => 0UL
+            };
+            value = unchecked((long)raw);
+            return true;
+        }
+
+        var text = Encoding.ASCII.GetString(bytes).TrimStart();
+        if (text.Length == 0)
+            return false;
+        var isHex = spec.Options.HasFlag(ByteCompareOptions.Hex) ||
+                    (spec.Options.HasFlag(ByteCompareOptions.Auto) && text.StartsWith("0x", StringComparison.OrdinalIgnoreCase));
+        if (isHex)
+        {
+            if (text.StartsWith("0x", StringComparison.OrdinalIgnoreCase)) text = text[2..];
+            var digits = text.TakeWhile(Uri.IsHexDigit).ToArray();
+            if (digits.Length == 0 || digits.Length > 16)
+                return false;
+            var hex = new string(digits);
+            if (spec.Options.HasFlag(ByteCompareOptions.Exact) && digits.Length != text.Length)
+                return false;
+            if ((hex.Length & 1) != 0) hex = "0" + hex;
+            if (spec.Options.HasFlag(ByteCompareOptions.LittleEndian))
+            {
+                var pairs = Enumerable.Range(0, hex.Length / 2).Select(i => hex.Substring(i * 2, 2)).Reverse();
+                hex = string.Concat(pairs);
+            }
+            return long.TryParse(hex, System.Globalization.NumberStyles.HexNumber, null, out value);
+        }
+
+        var digitsDec = text.TakeWhile(c => char.IsDigit(c) || (c is '+' or '-') && c == text[0]).ToArray();
+        if (digitsDec.Length == 0)
+            return false;
+        var decimalText = new string(digitsDec);
+        if (spec.Options.HasFlag(ByteCompareOptions.Exact) && digitsDec.Length != text.Length)
+            return false;
+        return long.TryParse(decimalText, out value);
+    }
+
+    private static bool CompareByteValue(long value, ByteCompareComparison comparison) => comparison.Operator switch
+    {
+        '>' => value > comparison.Value,
+        '<' => value < comparison.Value,
+        '=' => value == comparison.Value,
+        _ => false
+    };
+
+    private static int GetSubsigIndex(ContentSignature signature)
+    {
+        var hash = signature.Name.LastIndexOf('#');
+        return hash >= 0 && int.TryParse(signature.Name[(hash + 1)..], out var index) ? index : 0;
+    }
+
+    private static bool OffsetAllows(string value, int position, int length)
+    {
+        if (string.IsNullOrWhiteSpace(value) || value == "*") return true;
+        if (value.Equals("EOF", StringComparison.OrdinalIgnoreCase)) return position == length;
+        if (value.StartsWith("EOF-", StringComparison.OrdinalIgnoreCase) &&
+            int.TryParse(value[4..], out var eofShift))
+            return position == length - eofShift;
+        if (int.TryParse(value, out var exact)) return position == exact;
+        var parts = value.Split(',', 2, StringSplitOptions.TrimEntries);
+        return parts.Length == 2 && int.TryParse(parts[0], out var min) && int.TryParse(parts[1], out var max)
+            ? position >= min && position <= max
+            : false;
+    }
+
+    internal sealed class SubsigMatches
+    {
+        public int Index { get; }
+        public List<int> Positions { get; } = [];
+        public int Count => Positions.Count;
+
+        public SubsigMatches(int index) => Index = index;
+    }
+
+    internal static string DetectType(ReadOnlySpan<byte> data, string path)
+        => DetectType(data, path, null);
+
+    internal static string DetectType(
+        ReadOnlySpan<byte> data,
+        string path,
+        IReadOnlyList<ClamGuard.Database.Storage.FileTypeMagicRule>? fileTypeRules)
+    {
+        // ClamAV's primary file-typing mechanism is File Type Magic (FTM).
+        // Mode 0 direct-magic rules are tried before the built-in fallbacks.
+        if (data.Length != 0 && FileTypeMagicDetector.TryDetectDirect(data, fileTypeRules, out var magicType))
+        {
+            // CL_TYPE_BINARY_DATA is the fallback type in libclamav, not an
+            // instruction to stop file-type refinement. Keep specialized built-in
+            // checks active when an FTM rule only confirms generic binary data.
+            if (!magicType.Equals("OTHER", StringComparison.OrdinalIgnoreCase))
+            {
+                if (magicType.Equals("ZIP", StringComparison.OrdinalIgnoreCase) && TryRefineZipType(data) is { } refinedZip)
+                    return refinedZip;
+                return magicType;
+            }
+        }
+
+        if (data.Length >= 8 && data[..8].SequenceEqual(new byte[] { 0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1 })) return "OLE2";
+        if (data.Length >= 4 && data[..4].SequenceEqual(new byte[] { 0x7f, (byte)'E', (byte)'L', (byte)'F' })) return "ELF";
+        if (data.Length >= 3 && (data[..3].SequenceEqual("FWS"u8) || data[..3].SequenceEqual("CWS"u8) || data[..3].SequenceEqual("ZWS"u8))) return "FLASH";
+        if (data.Length >= 2 && data[0] == 'M' && data[1] == 'Z')
+        {
+            // Keep MZ as a useful type hint for truncated files, but prefer a
+            // validated PE header whenever the DOS header gives us enough data.
+            if (data.Length >= 0x40)
+            {
+                var pe = BinaryPrimitives.ReadInt32LittleEndian(data.Slice(0x3c, 4));
+                if (pe >= 0 && pe <= data.Length - 4 && BinaryPrimitives.ReadUInt32LittleEndian(data.Slice(pe, 4)) == 0x00004550)
+                    return "PE";
+            }
+            return "PE";
+        }
+        if (data.Length >= 4)
+        {
+            var magic = BinaryPrimitives.ReadUInt32BigEndian(data[..4]);
+            if (magic is 0xFEEDFACE or 0xCEFAEDFE or 0xFEEDFACF or 0xCFFAEDFE or
+                        0xCAFEBABE or 0xBEBAFECA or 0xCAFEBABF or 0xBFBAFECA) return "MACH-O";
+        }
+        if (LooksLikeAutoIt(data)) return "AUTOIT";
+        if (LooksLikeInstallShield(data)) return "ISHIELD_MSI";
+        var udfMarker = data.IndexOf("BEA01"u8);
+        if (udfMarker >= 0 && udfMarker <= 32768) return "UDF";
+        var utf16Html = DecodeUtf16Text(data);
+        if (utf16Html is not null)
+        {
+            var prefix = utf16Html[..Math.Min(4096, utf16Html.Length)];
+            if (prefix.IndexOf("<html", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                prefix.IndexOf("<!doctype", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "HTML_UTF16";
+        }
+        var mimeType = DetectMimeType(data);
+        if (mimeType is not null) return mimeType;
+        if (data.Length >= 5 && data[..5].SequenceEqual("%PDF-"u8)) return "PDF";
+        if (data.Length >= 5 && data[..5].SequenceEqual("{\\rtf"u8)) return "RTF";
+        if (data.Length >= 4 && BinaryPrimitives.ReadUInt32LittleEndian(data[..4]) == 0x223E9F78u) return "TNEF";
+        if (data.Length >= 6 && data[..6].SequenceEqual("begin "u8)) return "UUENCODED";
+        if (data.IndexOf("(This file must be converted with BinHex 4.0)"u8) >= 0) return "BINHEX";
+        if (data.Length >= 4 && (data[..4].SequenceEqual(new byte[] { 0x50, 0x4b, 0x03, 0x04 }) ||
+                                  data[..4].SequenceEqual(new byte[] { 0x50, 0x4b, 0x05, 0x06 }) ||
+                                  data[..4].SequenceEqual(new byte[] { 0x50, 0x4b, 0x07, 0x08 })))
+            return TryRefineZipType(data) ?? "ZIP";
+        if (data.Length >= 2 && data[0] == 0x1f && data[1] == 0x8b) return "GZ";
+        if (data.Length >= 3 && data[..3].SequenceEqual("BZh"u8)) return "BZ";
+        if (data.Length >= 6 && data[..4].SequenceEqual("EGGA"u8) && data[4] == 0x00 && data[5] == 0x01) return "EGG";
+        if (data.Length >= 4 && data[..4].SequenceEqual("ALZ\\x01"u8)) return "ALZ";
+        if (data.Length >= 16 && ArchiveScanner.IsSymbianSisHeader(data)) return "SIS";
+        if (data.Length >= 10 &&
+            BinaryPrimitives.ReadUInt32LittleEndian(data[..4]) == 0x44445A53 &&
+            BinaryPrimitives.ReadUInt32LittleEndian(data.Slice(4, 4)) == 0x3327F088 &&
+            BinaryPrimitives.ReadUInt16LittleEndian(data.Slice(8, 2)) == 0x0041) return "SZDD";
+        if (data.Length >= 6 && (data[..6].SequenceEqual("070701"u8) || data[..6].SequenceEqual("070702"u8))) return "CPIO_NEWC";
+        if (data.Length >= 6 && data[..6].SequenceEqual("070707"u8)) return "CPIO_ODC";
+        if (data.Length >= 2 && ((data[0] == 0xC7 && data[1] == 0x71) || (data[0] == 0x71 && data[1] == 0xC7))) return "CPIO_OLD";
+        if (data.Length >= 8 && data[..8].SequenceEqual(new byte[] { 0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C })) return "7Z";
+        if (data.Length >= 7 && data[..7].SequenceEqual(new byte[] { 0x52, 0x61, 0x72, 0x21, 0x1A, 0x07, 0x00 })) return "RAR";
+        if (data.Length >= 2 && data[0] == 0x60 && data[1] == 0xEA) return "ARJ";
+        if (data.Length >= 4 && data[..4].SequenceEqual("MSCF"u8)) return "CAB";
+        if (data.Length >= 4 && data[..4].SequenceEqual("ITSF"u8)) return "CHM";
+        if (data.Length >= 4 && data[..4].SequenceEqual("xar!"u8)) return "XAR";
+        if (data.Length >= 32774 && data.Slice(32769, 5).SequenceEqual("CD001"u8)) return "ISO";
+        if (data.Length >= 512 && (data[^512..^508].SequenceEqual("koly"u8) || data[^512..].Slice(0, 4).SequenceEqual("koly"u8))) return "DMG";
+        if (data.Length >= 6 && data[..6].SequenceEqual(new byte[] { 0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00 })) return "XZ";
+        if (data.Length >= 512 && data.Slice(257, 5).SequenceEqual("ustar"u8)) return "POSIX_TAR";
+        if (data.Length >= 512 && LooksLikeTarHeader(data[..512])) return "OLD_TAR";
+        if (data.Length >= 8 && data[0] == 0x89 && data[1] == 0x50 && data[2] == 0x4e && data[3] == 0x47) return "PNG";
+        if (data.Length >= 3 && data[..3].SequenceEqual(new byte[] { 0xff, 0xd8, 0xff })) return "JPEG";
+        if (data.Length >= 3 && data[..3].SequenceEqual("GIF"u8)) return "GIF";
+        if (data.Length >= 2 && data[0] == 'B' && data[1] == 'M') return "GRAPHICS";
+
+        // Mode 1 FTM rules are loaded into ClamAV's content matcher and are used
+        // for retyping text/binary layers after the direct magic pass.
+        if (fileTypeRules is not null && fileTypeRules.Count != 0)
+        {
+            var baseType = LooksLikeAsciiText(data) ? "ASCII" : "OTHER";
+            if (FileTypeMagicDetector.TryDetectContent(data, fileTypeRules, baseType, out var contentType))
+                return contentType;
+        }
+
+        var ext = Path.GetExtension(path).ToLowerInvariant();
+        var extensionType = ext switch
+        {
+            ".exe" or ".dll" or ".sys" => "PE",
+            ".pdf" => "PDF",
+            ".rtf" => "RTF",
+            ".hqx" => "BINHEX",
+            ".tnef" => "TNEF",
+            ".uue" or ".uu" => "UUENCODED",
+            ".zip" or ".jar" or ".apk" or ".docx" or ".xlsx" or ".pptx" => "ZIP",
+            ".rar" => "RAR",
+            ".7z" => "7Z",
+            ".egg" => "EGG",
+            ".alz" => "ALZ",
+            ".sis" => "SIS",
+            ".szdd" => "SZDD",
+            ".nsis" => "NULSFT",
+            ".a3x" or ".a3x64" or ".au3" => "AUTOIT",
+            ".ism" or ".ish" => "ISHIELD_MSI",
+            ".arj" => "ARJ",
+            ".cab" => "CAB",
+            ".chm" => "CHM",
+            ".iso" => "ISO",
+            ".xar" or ".pkg" => "XAR",
+            ".dmg" => "DMG",
+            ".swf" => "FLASH",
+            ".lha" or ".lzh" => "LHA",
+            ".gz" or ".tgz" => "GZ",
+            ".bz2" => "BZ",
+            ".xz" => "XZ",
+            ".tar" => "POSIX_TAR",
+            ".cpio" => "CPIO_NEWC",
+            ".doc" or ".xls" or ".ppt" => "OLE2",
+            ".htm" or ".html" => "HTML",
+            ".eml" or ".msg" => "MAIL",
+            ".mht" or ".mhtml" => "MHTML",
+            ".class" => "JAVA",
+            ".txt" or ".log" or ".csv" or ".xml" or ".json" or ".js" or ".css" => "ASCII",
+            _ => "Unknown"
+        };
+        if (!extensionType.Equals("Unknown", StringComparison.OrdinalIgnoreCase)) return extensionType;
+        return LooksLikeAsciiText(data) ? "ASCII" : "Unknown";
+    }
+
+    private static string? TryRefineZipType(ReadOnlySpan<byte> data)
+    {
+        if (data.Length < 4) return null;
+        ReadOnlySpan<byte> localHeader = new byte[] { 0x50, 0x4b, 0x03, 0x04 };
+        var searchOffset = 0;
+        var checkedHeaders = 0;
+        while (checkedHeaders < 3 && searchOffset < data.Length)
+        {
+            var relative = data[searchOffset..].IndexOf(localHeader);
+            if (relative < 0) break;
+            var header = searchOffset + relative;
+            if (header > data.Length - 30) break;
+
+            var nameLength = BinaryPrimitives.ReadUInt16LittleEndian(data.Slice(header + 26, 2));
+            var extraLength = BinaryPrimitives.ReadUInt16LittleEndian(data.Slice(header + 28, 2));
+            var nameStart = header + 30;
+            if (nameLength > data.Length - nameStart) break;
+            var name = Encoding.UTF8.GetString(data.Slice(nameStart, nameLength)).Replace('\\', '/');
+
+            if (name.StartsWith("word/", StringComparison.OrdinalIgnoreCase)) return "OOXML_WORD";
+            if (name.StartsWith("xl/", StringComparison.OrdinalIgnoreCase)) return "OOXML_XL";
+            if (name.StartsWith("ppt/", StringComparison.OrdinalIgnoreCase)) return "OOXML_PPT";
+            if (name.Equals("Contents/content.hpf", StringComparison.OrdinalIgnoreCase)) return "OOXML_HWP";
+
+            checkedHeaders++;
+            var next = nameStart + nameLength + extraLength;
+            searchOffset = next > header ? Math.Min(next, data.Length) : header + 4;
+        }
+        return null;
+    }
+
+    private static string? DetectMimeType(ReadOnlySpan<byte> data)
+    {
+        var sample = Encoding.Latin1.GetString(data[..Math.Min(data.Length, 64 * 1024)]);
+        var headersEnd = sample.IndexOf("\r\n\r\n", StringComparison.Ordinal);
+        if (headersEnd < 0) headersEnd = sample.IndexOf("\n\n", StringComparison.Ordinal);
+        if (headersEnd < 0) headersEnd = Math.Min(sample.Length, 16 * 1024);
+        var headers = sample[..headersEnd];
+        var hasMime = Regex.IsMatch(headers, @"(?im)^\s*MIME-Version\s*:");
+        var hasContentType = Regex.IsMatch(headers, @"(?im)^\s*Content-Type\s*:");
+        var hasMailHeader = Regex.IsMatch(headers, @"(?im)^\s*(From|Received|Message-Id)\s*:");
+        if (!hasContentType || (!hasMime && !hasMailHeader)) return null;
+        return headers.IndexOf("multipart/related", StringComparison.OrdinalIgnoreCase) >= 0 ? "MHTML" : "MAIL";
+    }
+
+    private static bool LooksLikeAutoIt(ReadOnlySpan<byte> data)
+    {
+        ReadOnlySpan<byte> magic = new byte[] { 0xA3, 0x48, 0x4B, 0xBE, 0x98, 0x6C, 0x4A, 0xA9, 0x99, 0x4C, 0x53, 0x0A, 0x86, 0xD6, 0x48, 0x7D, 0x41, 0x55, 0x53, 0x21, 0x45, 0x41, 0x30 };
+        for (var i = 0; i + magic.Length + 1 < data.Length; i++)
+        {
+            if (!data.Slice(i, magic.Length).SequenceEqual(magic)) continue;
+            var version = data[i + magic.Length];
+            if (version is 0x35 or 0x36) return true;
+        }
+        return false;
+    }
+
+    private static bool LooksLikeInstallShield(ReadOnlySpan<byte> data)
+    {
+        ReadOnlySpan<byte> prefix = "InstallShield\0"u8;
+        for (var i = 0; i + prefix.Length + 0x120 < data.Length; i++)
+        {
+            if (!data.Slice(i, prefix.Length).SequenceEqual(prefix)) continue;
+            var p = i + prefix.Length + 292;
+            if (p + 8 + 16 + 4 > data.Length) return false;
+            if (data[p] != 0x06 || !data.Slice(p + 1, 7).SequenceEqual(new byte[7])) continue;
+            if (BinaryPrimitives.ReadUInt32LittleEndian(data.Slice(p + 24, 4)) == 1) return true;
+        }
+        return false;
+    }
+
+    private static bool LooksLikeTarHeader(ReadOnlySpan<byte> header)
+    {
+        if (header.Length < 512) return false;
+        var nameEnd = header[..100].IndexOf((byte)0);
+        if (nameEnd == 0) return false;
+        var storedText = Encoding.ASCII.GetString(header.Slice(148, 8)).TrimEnd('\0').Trim();
+        if (!long.TryParse(storedText, System.Globalization.NumberStyles.Integer, null, out var stored)) return false;
+        var sum = 0L;
+        for (var i = 0; i < 512; i++) sum += i is >= 148 and < 156 ? 32 : header[i];
+        return stored > 0 && sum == stored;
+    }
+
+    private static bool LooksLikeAsciiText(ReadOnlySpan<byte> data)
+    {
+        if (data.IsEmpty || data.Length > 4 * 1024 * 1024) return false;
+        var printable = 0;
+        var suspicious = 0;
+        foreach (var b in data)
+        {
+            if (b == 0) return false;
+            if (b is >= 0x20 and <= 0x7e || b is 0x09 or 0x0a or 0x0d or 0x0c) printable++;
+            else if (b < 0x20) suspicious++;
+            else suspicious++;
+        }
+        return printable >= data.Length * 0.90 && suspicious <= data.Length * 0.10;
+    }
+
+    private static string DetectType(string path) => DetectType(ReadOnlySpan<byte>.Empty, path);
+}
+
+internal static class ExpressionEvaluator
+{
+    private enum TokenKind { Number, And, Or, LParen, RParen, Eq, Gt, Lt, Comma, End }
+    private readonly record struct Token(TokenKind Kind, int Value = 0);
+
+    private readonly record struct EvalValue(bool Result, int Count, HashSet<int> Distinct)
+    {
+        public static EvalValue Empty => new(false, 0, []);
+
+        public EvalValue Merge(EvalValue other, bool result)
+        {
+            // ClamAV only propagates match counts/IDs from a logical block when
+            // the block itself evaluates true. This matters for outer count
+            // modifiers such as `(0&1)>0`: a failed `0&1` contributes zero,
+            // rather than leaking the count from the successful left operand.
+            if (!result)
+                return Empty;
+
+            var distinct = new HashSet<int>(Distinct);
+            distinct.UnionWith(other.Distinct);
+            return new EvalValue(true, Count + other.Count, distinct);
+        }
+    }
+
+    public static bool ValidateReferencesBefore(string expression, int exclusiveUpperBound)
+    {
+        if (exclusiveUpperBound < 0) return false;
+        try
+        {
+            var parser = new Parser(expression, Array.Empty<ScannerEngine.SubsigMatches>(), int.MaxValue, exclusiveUpperBound);
+            _ = parser.ParseOr(0);
+            return parser.Current.Kind == TokenKind.End;
+        }
+        catch (FormatException)
+        {
+            return false;
+        }
+        catch (InvalidDataException)
+        {
+            return false;
+        }
+    }
+
+    public static bool Evaluate(string expression, IReadOnlyList<ScannerEngine.SubsigMatches> matches, int maxDepth)
+    {
+        var parser = new Parser(expression, matches, maxDepth);
+        var value = parser.ParseOr(0);
+        if (parser.Current.Kind != TokenKind.End)
+            throw new FormatException("Unexpected trailing tokens in logical expression.");
+        return value.Result;
+    }
+
+    private sealed class Parser
+    {
+        private readonly List<Token> _tokens;
+        private readonly IReadOnlyList<ScannerEngine.SubsigMatches> _matches;
+        private readonly int _maxDepth;
+        private readonly int _referenceUpperBound;
+        private int _index;
+
+        public Token Current => _tokens[_index];
+
+        public Parser(string expression, IReadOnlyList<ScannerEngine.SubsigMatches> matches, int maxDepth, int referenceUpperBound = -1)
+        {
+            _tokens = Tokenize(expression);
+            _matches = matches;
+            _maxDepth = maxDepth;
+            _referenceUpperBound = referenceUpperBound;
+        }
+
+        // ClamAV 1.5.4 does not use conventional boolean precedence here.
+        // cli_ac_chklsig() splits on the first top-level '&' or '|', then
+        // recursively evaluates the remainder. This makes expressions such as
+        // 0&1|2 parse as 0&(1|2), so we intentionally mirror that behavior.
+        public EvalValue ParseOr(int depth)
+        {
+            Guard(depth);
+            var left = ParsePrimary(depth + 1);
+            if (Current.Kind is not (TokenKind.And or TokenKind.Or))
+                return left;
+
+            var op = Current.Kind;
+            _index++;
+            var right = ParseOr(depth + 1);
+            var result = op == TokenKind.And
+                ? left.Result && right.Result
+                : left.Result || right.Result;
+            return left.Merge(right, result);
+        }
+
+        private EvalValue ParsePrimary(int depth)
+        {
+            Guard(depth);
+            EvalValue value;
+            if (Current.Kind == TokenKind.LParen)
+            {
+                _index++;
+                value = ParseOr(depth + 1);
+                Expect(TokenKind.RParen);
+                _index++;
+            }
+            else
+            {
+                Expect(TokenKind.Number);
+                var index = Current.Value;
+                _index++;
+                if (_referenceUpperBound >= 0 && index >= _referenceUpperBound)
+                    throw new FormatException("Logical expression references a future or unavailable subsignature.");
+                if ((uint)index >= (uint)_matches.Count)
+                    value = EvalValue.Empty;
+                else
+                {
+                    var sub = _matches[index];
+                    var distinct = sub.Count == 0 ? [] : new HashSet<int> { index };
+                    value = new EvalValue(sub.Count > 0, sub.Count, distinct);
+                }
+            }
+            return ParseComparison(value);
+        }
+
+        private EvalValue ParseComparison(EvalValue value)
+        {
+            if (Current.Kind is not (TokenKind.Eq or TokenKind.Gt or TokenKind.Lt))
+                return value;
+
+            var kind = Current.Kind;
+            _index++;
+            Expect(TokenKind.Number);
+            var first = Current.Value;
+            _index++;
+            int? distinctMinimum = null;
+            if (Current.Kind == TokenKind.Comma)
+            {
+                _index++;
+                Expect(TokenKind.Number);
+                distinctMinimum = Current.Value;
+                _index++;
+            }
+
+            if (first < 0 || distinctMinimum is < 0)
+                throw new FormatException("Logical comparison values must be non-negative.");
+
+            var result = kind switch
+            {
+                TokenKind.Eq => value.Count == first && (!distinctMinimum.HasValue || value.Distinct.Count >= distinctMinimum.Value),
+                TokenKind.Gt => value.Count > first && (!distinctMinimum.HasValue || value.Distinct.Count >= distinctMinimum.Value),
+                TokenKind.Lt => value.Count < first && (!distinctMinimum.HasValue || value.Distinct.Count >= distinctMinimum.Value),
+                _ => false
+            };
+
+            // A failed comparison is a failed logical block in ClamAV and must
+            // not carry its pre-comparison count/IDs into an outer modifier.
+            return result ? value with { Result = true } : EvalValue.Empty;
+        }
+
+        private void Expect(TokenKind kind)
+        {
+            if (Current.Kind != kind)
+                throw new FormatException($"Unexpected logical token: expected {kind}, got {Current.Kind}.");
+        }
+
+        private void Guard(int depth)
+        {
+            if (depth > _maxDepth)
+                throw new InvalidDataException("Logical expression nesting limit exceeded.");
+        }
+
+        private static List<Token> Tokenize(string expression)
+        {
+            var result = new List<Token>();
+            for (var i = 0; i < expression.Length; i++)
+            {
+                var c = expression[i];
+                if (char.IsWhiteSpace(c)) continue;
+                if (char.IsDigit(c))
+                {
+                    var start = i;
+                    while (i + 1 < expression.Length && char.IsDigit(expression[i + 1])) i++;
+                    if (!int.TryParse(expression[start..(i + 1)], out var number))
+                        throw new FormatException("Invalid logical integer.");
+                    result.Add(new Token(TokenKind.Number, number));
+                    continue;
+                }
+                result.Add(c switch
+                {
+                    '&' => new Token(TokenKind.And),
+                    '|' => new Token(TokenKind.Or),
+                    '(' => new Token(TokenKind.LParen),
+                    ')' => new Token(TokenKind.RParen),
+                    '=' => new Token(TokenKind.Eq),
+                    '>' => new Token(TokenKind.Gt),
+                    '<' => new Token(TokenKind.Lt),
+                    ',' => new Token(TokenKind.Comma),
+                    _ => throw new FormatException($"Unsupported logical expression character: {c}")
+                });
+            }
+            result.Add(new Token(TokenKind.End));
+            return result;
+        }
+    }
+}

@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="..\ClamGuard.Core\ClamGuard.Core.csproj" />
+    <ProjectReference Include="..\ClamGuard.Database\ClamGuard.Database.csproj" />
+    <ProjectReference Include="..\ClamGuard.Scanner\ClamGuard.Scanner.csproj" />
+  </ItemGroup>
+</Project>

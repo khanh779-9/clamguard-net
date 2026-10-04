@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="..\ClamGuard.Core\ClamGuard.Core.csproj" />
+    <ProjectReference Include="..\ClamGuard.Signatures\ClamGuard.Signatures.csproj" />
+    <ProjectReference Include="..\ClamGuard.Yara\ClamGuard.Yara.csproj" />
+    <ProjectReference Include="..\ClamGuard.Bytecode\ClamGuard.Bytecode.csproj" />
+  </ItemGroup>
+</Project>

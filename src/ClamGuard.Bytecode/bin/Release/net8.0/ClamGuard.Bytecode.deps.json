@@ -1,0 +1,39 @@
+{
+  "runtimeTarget": {
+    "name": ".NETCoreApp,Version=v8.0",
+    "signature": ""
+  },
+  "compilationOptions": {},
+  "targets": {
+    ".NETCoreApp,Version=v8.0": {
+      "ClamGuard.Bytecode/1.0.0": {
+        "dependencies": {
+          "ClamGuard.Core": "1.0.0"
+        },
+        "runtime": {
+          "ClamGuard.Bytecode.dll": {}
+        }
+      },
+      "ClamGuard.Core/1.0.0": {
+        "runtime": {
+          "ClamGuard.Core.dll": {
+            "assemblyVersion": "1.0.0.0",
+            "fileVersion": "1.0.0.0"
+          }
+        }
+      }
+    }
+  },
+  "libraries": {
+    "ClamGuard.Bytecode/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    },
+    "ClamGuard.Core/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    }
+  }
+}

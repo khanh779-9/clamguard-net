@@ -1,0 +1,15 @@
+C:\Users\quock\Downloads\proj\src\ClamGuard.Signatures\bin\Debug\net8.0\ClamGuard.Signatures.deps.json
+C:\Users\quock\Downloads\proj\src\ClamGuard.Signatures\bin\Debug\net8.0\ClamGuard.Signatures.dll
+C:\Users\quock\Downloads\proj\src\ClamGuard.Signatures\bin\Debug\net8.0\ClamGuard.Signatures.pdb
+C:\Users\quock\Downloads\proj\src\ClamGuard.Signatures\bin\Debug\net8.0\ClamGuard.Core.dll
+C:\Users\quock\Downloads\proj\src\ClamGuard.Signatures\bin\Debug\net8.0\ClamGuard.Core.pdb
+C:\Users\quock\Downloads\proj\src\ClamGuard.Signatures\obj\Debug\net8.0\ClamGuard.Signatures.csproj.AssemblyReference.cache
+C:\Users\quock\Downloads\proj\src\ClamGuard.Signatures\obj\Debug\net8.0\ClamGuard.Signatures.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\quock\Downloads\proj\src\ClamGuard.Signatures\obj\Debug\net8.0\ClamGuard.Signatures.AssemblyInfoInputs.cache
+C:\Users\quock\Downloads\proj\src\ClamGuard.Signatures\obj\Debug\net8.0\ClamGuard.Signatures.AssemblyInfo.cs
+C:\Users\quock\Downloads\proj\src\ClamGuard.Signatures\obj\Debug\net8.0\ClamGuard.Signatures.csproj.CoreCompileInputs.cache
+C:\Users\quock\Downloads\proj\src\ClamGuard.Signatures\obj\Debug\net8.0\ClamGuar.817722CB.Up2Date
+C:\Users\quock\Downloads\proj\src\ClamGuard.Signatures\obj\Debug\net8.0\ClamGuard.Signatures.dll
+C:\Users\quock\Downloads\proj\src\ClamGuard.Signatures\obj\Debug\net8.0\refint\ClamGuard.Signatures.dll
+C:\Users\quock\Downloads\proj\src\ClamGuard.Signatures\obj\Debug\net8.0\ClamGuard.Signatures.pdb
+C:\Users\quock\Downloads\proj\src\ClamGuard.Signatures\obj\Debug\net8.0\ref\ClamGuard.Signatures.dll

@@ -1,0 +1,24 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Restore
+        run: dotnet restore ClamGuard.Net.sln
+      - name: Build
+        run: dotnet build ClamGuard.Net.sln --configuration Release --no-restore /p:TreatWarningsAsErrors=true
+      - name: Run regression harness
+        run: dotnet run --project tests/ClamGuard.Tests/ClamGuard.Tests.csproj --configuration Release --no-build
