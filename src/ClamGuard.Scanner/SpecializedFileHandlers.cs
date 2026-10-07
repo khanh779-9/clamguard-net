@@ -582,12 +582,23 @@ internal static class SpecializedFileHandlers
         {
             if (char.IsWhiteSpace(ch))
             {
-                pendingSpace = output.Length != 0;
+                pendingSpace = true;
                 continue;
             }
-            if (pendingSpace && output.Length != 0) output.Append(' ');
+            var lower = char.ToLowerInvariant(ch);
+            var isPunct = !char.IsLetterOrDigit(lower) && lower != '$' && lower != '_';
+            if (pendingSpace && output.Length != 0)
+            {
+                var prev = output[^1];
+                var prevIsPunct = !char.IsLetterOrDigit(prev) && prev != '$' && prev != '_';
+                // In ClamAV js-norm tokenization, spaces are only needed between word tokens
+                if (!isPunct && !prevIsPunct)
+                {
+                    output.Append(' ');
+                }
+            }
             pendingSpace = false;
-            output.Append(char.ToLowerInvariant(ch));
+            output.Append(lower);
         }
         if (output.Length != 0) output.Append('\n');
     }

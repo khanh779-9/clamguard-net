@@ -1,0 +1,28 @@
+## Build and Output Folders
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+[Ll]ogs/
+
+## Visual Studio & IDEs
+.vs/
+*.user
+*.userosscache
+*.sln.docstates
+*.suo
+
+## VS Code
+.vscode/
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+## Temporary / Test Files
+*.tmp
+*.log
+test_parse.cs
+
+## OS Generated Files
+.DS_Store
+Thumbs.db

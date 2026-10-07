@@ -192,12 +192,20 @@ public static class HexPatternParser
 
     private static GapAtom ParseBracketRange(string inner)
     {
+        if (string.IsNullOrWhiteSpace(inner)) throw new FormatException("Empty bracket range.");
+        if (!inner.Contains('-'))
+        {
+            var n = ParseInt(inner);
+            if (n < 0)
+                throw new FormatException($"Invalid bracket range '{inner}'.");
+            return new GapAtom(n, n);
+        }
+
         var parts = inner.Split('-', 2);
-        if (parts.Length != 2) throw new FormatException("Bracket range must be x-y.");
-        var min = ParseInt(parts[0]);
-        var max = ParseInt(parts[1]);
-        if (min < 0 || max < min || max > 32)
-            throw new FormatException("Invalid bracket range; the maximum gap is 32 bytes.");
+        var min = parts[0].Length == 0 ? 0 : ParseInt(parts[0]);
+        var max = parts[1].Length == 0 ? int.MaxValue : ParseInt(parts[1]);
+        if (min < 0 || max < min)
+            throw new FormatException($"Invalid bracket range '{inner}'.");
         return new GapAtom(min, max);
     }
 

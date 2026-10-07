@@ -1,0 +1,435 @@
+<UserControl x:Class="ClamGuard.Antivirus.Views.ScanView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:loc="clr-namespace:ClamGuard.Antivirus.Localization"
+             xmlns:models="clr-namespace:ClamGuard.Antivirus.Models"
+             xmlns:core="clr-namespace:ClamGuard.Core;assembly=ClamGuard.Core"
+             xmlns:controls="clr-namespace:ClamGuard.Antivirus.Controls"
+             UseLayoutRounding="True" SnapsToDevicePixels="True">
+    <Grid>
+        <!-- MODE 1: Scan Setup & In-Progress Dashboard Panel -->
+        <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,6,0"
+                      Visibility="{Binding IsShowingScanResults, Converter={StaticResource InverseBooleanToVisibilityConverter}}">
+            <StackPanel>
+                <!-- CARD A: Header Banner -->
+                <Border Style="{DynamicResource Style.CardEmphasis}" Padding="18">
+                    <Grid>
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="46" /><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                        <Border Width="42" Height="42" Background="{DynamicResource Brush.PrimarySoft}">
+                            <Path Width="21" Height="21" HorizontalAlignment="Center" VerticalAlignment="Center" Stroke="{DynamicResource Brush.Primary}" StrokeThickness="1.6" Data="{DynamicResource Icon.Scan}" Stretch="Uniform" />
+                        </Border>
+                        <StackPanel Grid.Column="1" Margin="13,0,20,0" VerticalAlignment="Center">
+                            <TextBlock Text="{loc:Loc scan.scan_files}" Style="{DynamicResource Style.CardTitle}" FontSize="16" />
+                            <TextBlock Text="{loc:Loc scan.scan_files_desc}" Margin="0,4,0,0" Style="{DynamicResource Style.MutedText}" />
+                        </StackPanel>
+                        <Border Grid.Column="2" Background="{DynamicResource Brush.SurfaceSubtle}" BorderBrush="{DynamicResource Brush.Border}" BorderThickness="1" Padding="9,5">
+                            <TextBlock Text="{Binding DatabaseStatusText}" Style="{DynamicResource Style.ReadyText}" FontSize="9.5" FontWeight="SemiBold" />
+                        </Border>
+                    </Grid>
+                </Border>
+
+                <!-- CARD B: Scan Launch Cards (Visible when NOT scanning) -->
+                <Grid Margin="0,14,0,0" Visibility="{Binding IsScanning, Converter={StaticResource InverseBooleanToVisibilityConverter}}">
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="10" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                    <Border Grid.Column="0" Style="{DynamicResource Style.Card}" Padding="18">
+                        <Grid>
+                            <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                            <StackPanel Orientation="Horizontal">
+                                <Border Width="36" Height="36" Background="{DynamicResource Brush.PrimarySoft}">
+                                    <Path Width="18" Height="18" HorizontalAlignment="Center" VerticalAlignment="Center" Stroke="{DynamicResource Brush.Primary}" StrokeThickness="1.5" Data="{DynamicResource Icon.File}" Stretch="Uniform" />
+                                </Border>
+                                <StackPanel Margin="10,0,0,0">
+                                    <TextBlock Text="{loc:Loc scan.file_scan}" Style="{DynamicResource Style.CardTitle}" />
+                                    <TextBlock Text="{loc:Loc scan.file_scan_desc}" Style="{DynamicResource Style.MutedText}" Margin="0,2,0,0" />
+                                </StackPanel>
+                            </StackPanel>
+                            <Button Grid.Row="1" Margin="0,14,0,0" Command="{Binding QuickScanCommand}" Style="{DynamicResource Style.ButtonPrimary}" IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBoolConverter}}">
+                                <TextBlock Text="{loc:Loc scan.select_file}" />
+                            </Button>
+                        </Grid>
+                    </Border>
+                    <Border Grid.Column="2" Style="{DynamicResource Style.Card}" Padding="18">
+                        <Grid>
+                            <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                            <StackPanel Orientation="Horizontal">
+                                <Border Width="36" Height="36" Background="{DynamicResource Brush.SurfaceSubtle}">
+                                    <Path Width="18" Height="18" HorizontalAlignment="Center" VerticalAlignment="Center" Stroke="{DynamicResource Brush.TextSecondary}" StrokeThickness="1.5" Data="{DynamicResource Icon.Folder}" Stretch="Uniform" />
+                                </Border>
+                                <StackPanel Margin="10,0,0,0">
+                                    <TextBlock Text="{loc:Loc scan.folder_scan}" Style="{DynamicResource Style.CardTitle}" />
+                                    <TextBlock Text="{loc:Loc scan.folder_scan_desc}" Style="{DynamicResource Style.MutedText}" Margin="0,2,0,0" />
+                                </StackPanel>
+                            </StackPanel>
+                            <Button Grid.Row="1" Margin="0,14,0,0" Command="{Binding CustomScanCommand}" Style="{DynamicResource Style.ButtonSecondary}" IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBoolConverter}}">
+                                <TextBlock Text="{loc:Loc scan.select_folder}" />
+                            </Button>
+                        </Grid>
+                    </Border>
+                </Grid>
+
+                <!-- CARD C: LIVE DETAILED SCAN DASHBOARD (Visible during Active Scan) -->
+                <Border Margin="0,14,0,0" Style="{DynamicResource Style.Card}" Padding="22"
+                        Visibility="{Binding IsScanning, Converter={StaticResource BoolToVisibilityConverter}}">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+
+                        <!-- Top row: Animated radar/spinner + Title + Cancel button -->
+                        <Grid Grid.Row="0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+
+                            <!-- Modern Scan Pulse Badge -->
+                            <Grid Width="46" Height="46" Margin="0,0,16,0" VerticalAlignment="Center">
+                                <Ellipse Stroke="{DynamicResource Brush.PrimarySoft}" StrokeThickness="3.5" />
+                                <Path Stroke="{DynamicResource Brush.Primary}" StrokeThickness="3.5"
+                                      StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                                      Data="M 23,3 A 20,20 0 0 1 43,23"
+                                      RenderTransformOrigin="0.5,0.5">
+                                    <Path.RenderTransform>
+                                        <RotateTransform x:Name="LiveScanRotate" Angle="0" />
+                                    </Path.RenderTransform>
+                                    <Path.Triggers>
+                                        <EventTrigger RoutedEvent="Loaded">
+                                            <BeginStoryboard>
+                                                <Storyboard RepeatBehavior="Forever">
+                                                    <DoubleAnimation Storyboard.TargetName="LiveScanRotate"
+                                                                     Storyboard.TargetProperty="Angle"
+                                                                     From="0" To="360"
+                                                                     Duration="0:0:1" />
+                                                </Storyboard>
+                                            </BeginStoryboard>
+                                        </EventTrigger>
+                                    </Path.Triggers>
+                                </Path>
+                                <Path Width="16" Height="16" HorizontalAlignment="Center" VerticalAlignment="Center"
+                                      Stroke="{DynamicResource Brush.Primary}" StrokeThickness="1.5"
+                                      Data="{DynamicResource Icon.Shield}" Stretch="Uniform" />
+                            </Grid>
+
+                            <!-- Title & Subtitle -->
+                            <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                <TextBlock Text="{loc:Loc scan.scanning_active}" Style="{DynamicResource Style.SectionLabel}" />
+                                <TextBlock Text="{Binding BusyStatusText}" Margin="0,3,0,0" FontSize="16" FontWeight="SemiBold"
+                                           Foreground="{DynamicResource Brush.TextPrimary}" />
+                            </StackPanel>
+
+                            <!-- Prominent Cancel Scan Button -->
+                            <Button Grid.Column="2" Command="{Binding CancelScanCommand}"
+                                    Style="{DynamicResource Style.ButtonSecondary}"
+                                    Padding="14,7" Height="36" VerticalAlignment="Center">
+                                <StackPanel Orientation="Horizontal">
+                                    <Path Width="11" Height="11" Stroke="{DynamicResource Brush.Danger}" StrokeThickness="1.8"
+                                          Data="{DynamicResource Icon.Close}" Margin="0,0,7,0" Stretch="Uniform" />
+                                    <TextBlock Text="{loc:Loc scan.cancel_scan}" Foreground="{DynamicResource Brush.Danger}"
+                                               FontSize="11" FontWeight="SemiBold" />
+                                </StackPanel>
+                            </Button>
+                        </Grid>
+
+                        <!-- Middle Row: Metrics Grid -->
+                        <Grid Grid.Row="1" Margin="0,18,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="12" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="12" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+
+                            <!-- Stat 1: Files Scanned -->
+                            <Border Grid.Column="0" Background="{DynamicResource Brush.SurfaceSubtle}" BorderBrush="{DynamicResource Brush.Border}"
+                                    BorderThickness="1" CornerRadius="8" Padding="14,10">
+                                <StackPanel>
+                                    <TextBlock Text="{loc:Loc scan.files_scanned}" FontSize="10" FontWeight="SemiBold"
+                                               Foreground="{DynamicResource Brush.TextMuted}" />
+                                    <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                                        <TextBlock Text="{Binding ScannedCount, StringFormat={}{0:N0}}" FontSize="18" FontWeight="SemiBold"
+                                                   Foreground="{DynamicResource Brush.TextPrimary}" />
+                                        <TextBlock Text="{Binding TotalToScan, StringFormat=' / {0:N0}'}" FontSize="13"
+                                                   VerticalAlignment="Bottom" Margin="3,0,0,2"
+                                                   Foreground="{DynamicResource Brush.TextMuted}" />
+                                    </StackPanel>
+                                </StackPanel>
+                            </Border>
+
+                            <!-- Stat 2: Progress Percent -->
+                            <Border Grid.Column="2" Background="{DynamicResource Brush.SurfaceSubtle}" BorderBrush="{DynamicResource Brush.Border}"
+                                    BorderThickness="1" CornerRadius="8" Padding="14,10">
+                                <StackPanel>
+                                    <TextBlock Text="{loc:Loc scan.col_status}" FontSize="10" FontWeight="SemiBold"
+                                               Foreground="{DynamicResource Brush.TextMuted}" />
+                                    <TextBlock Margin="0,4,0,0" FontSize="18" FontWeight="SemiBold"
+                                               Foreground="{DynamicResource Brush.Primary}">
+                                        <TextBlock.Text>
+                                            <MultiBinding StringFormat="{}{0:0.#}%">
+                                                <Binding Path="ScanPercent" />
+                                            </MultiBinding>
+                                        </TextBlock.Text>
+                                    </TextBlock>
+                                </StackPanel>
+                            </Border>
+
+                            <!-- Stat 3: Threats Detected -->
+                            <Border Grid.Column="4" Background="{DynamicResource Brush.SurfaceSubtle}" BorderBrush="{DynamicResource Brush.Border}"
+                                    BorderThickness="1" CornerRadius="8" Padding="14,10">
+                                <StackPanel>
+                                    <TextBlock Text="{loc:Loc scan.threats_detected}" FontSize="10" FontWeight="SemiBold"
+                                               Foreground="{DynamicResource Brush.TextMuted}" />
+                                    <TextBlock Text="{Binding ThreatsDetectedCount, StringFormat={}{0:N0}}" Margin="0,4,0,0"
+                                               FontSize="18" FontWeight="SemiBold">
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="Foreground" Value="{DynamicResource Brush.Success}" />
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding ThreatsDetectedCount}" Value="0">
+                                                        <Setter Property="Foreground" Value="{DynamicResource Brush.Success}" />
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                    </TextBlock>
+                                </StackPanel>
+                            </Border>
+                        </Grid>
+
+                        <!-- Progress Bar (deterministic if Total > 0, indeterminate if not) -->
+                        <ProgressBar Grid.Row="2" Margin="0,18,0,0" Height="8" Minimum="0" Maximum="100"
+                                     Value="{Binding ScanPercent, Mode=OneWay}"
+                                     IsIndeterminate="{Binding TotalToScan, Converter={StaticResource InverseBoolConverter}}"
+                                     Style="{DynamicResource Style.ProgressBar}" />
+
+                        <!-- Bottom Ticker: Currently inspecting file path -->
+                        <Grid Grid.Row="3" Margin="0,12,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="{loc:Loc scan.current_item}" FontSize="10.5" FontWeight="SemiBold"
+                                       Foreground="{DynamicResource Brush.TextMuted}" Margin="0,0,8,0" />
+                            <TextBlock Grid.Column="1" Text="{Binding CurrentScanningFile}"
+                                       FontFamily="Consolas" FontSize="10.5"
+                                       Foreground="{DynamicResource Brush.TextSecondary}"
+                                       TextTrimming="CharacterEllipsis"
+                                       ToolTip="{Binding CurrentScanningFile}" />
+                        </Grid>
+                    </Grid>
+                </Border>
+
+                <!-- CARD D: Safety limits advice -->
+                <Border Margin="0,14,0,0" Style="{DynamicResource Style.CardQuiet}" Padding="15">
+                    <StackPanel Orientation="Horizontal">
+                        <Path Width="15" Height="15" Margin="0,1,9,0" Stroke="{DynamicResource Brush.TextSecondary}" StrokeThickness="1.5" Data="{DynamicResource Icon.Info}" />
+                        <StackPanel>
+                            <TextBlock Text="{loc:Loc scan.limits}" Style="{DynamicResource Style.CardTitle}" FontSize="11" />
+                            <TextBlock Text="{loc:Loc scan.limit_desc}" Margin="0,2,0,0" Style="{DynamicResource Style.MutedText}" />
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+        </ScrollViewer>
+
+        <!-- MODE 2: Scan Results DataGrid Table Panel -->
+        <Grid Visibility="{Binding IsShowingScanResults, Converter={StaticResource BoolToVisibilityConverter}}">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="12" />
+                <RowDefinition Height="*" />
+                <RowDefinition Height="12" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
+            <!-- Header & Action Buttons -->
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <StackPanel Margin="0,0,16,0">
+                    <TextBlock Text="{Binding ScanResultsTitle}" Style="{DynamicResource Style.SectionLabel}" />
+                    <TextBlock Text="{Binding ScanResultsSummaryText}" Margin="0,4,0,0" Style="{DynamicResource Style.CardTitle}" />
+                </StackPanel>
+                <WrapPanel Grid.Column="1" HorizontalAlignment="Right" VerticalAlignment="Center">
+                    <Button Command="{Binding BackToScanCommand}" Style="{DynamicResource Style.ButtonSecondary}" Height="34" Padding="12,6" Margin="0,0,10,0">
+                        <StackPanel Orientation="Horizontal">
+                            <Path Width="11" Height="11" Stroke="{DynamicResource Brush.TextSecondary}" StrokeThickness="1.5" Data="{DynamicResource Icon.ChevronRight}" Stretch="Uniform" RenderTransformOrigin="0.5,0.5">
+                                <Path.RenderTransform>
+                                    <RotateTransform Angle="180" />
+                                </Path.RenderTransform>
+                            </Path>
+                            <TextBlock Text="{loc:Loc scan.results_back}" Margin="6,0,0,0" />
+                        </StackPanel>
+                    </Button>
+                    <Button Command="{Binding ApplyScanActionsCommand}" Style="{DynamicResource Style.ButtonPrimary}" Height="34" Padding="14,6">
+                        <StackPanel Orientation="Horizontal">
+                            <Path Width="12" Height="12" Stroke="{DynamicResource Brush.PrimaryContent}" StrokeThickness="1.5" Data="{DynamicResource Icon.Check}" Stretch="Uniform" />
+                            <TextBlock Text="{loc:Loc scan.results_apply}" Margin="6,0,0,0" />
+                        </StackPanel>
+                    </Button>
+                </WrapPanel>
+            </Grid>
+
+            <!-- DataGrid Panel -->
+            <Border Grid.Row="2" Style="{DynamicResource Style.Card}" Padding="0" ClipToBounds="True">
+                <Grid MinHeight="250">
+                    <DataGrid x:Name="ScanResultsGrid" ItemsSource="{Binding CurrentScanResults}"
+                              SelectedItem="{Binding SelectedScanResult, Mode=TwoWay}"
+                              Style="{DynamicResource Style.DataTable}">
+                        <DataGrid.Columns>
+                            <!-- File Path Column -->
+                            <DataGridTemplateColumn Width="*" MinWidth="220" SortMemberPath="FilePath">
+                                <DataGridTemplateColumn.HeaderTemplate>
+                                    <DataTemplate><TextBlock Text="{loc:Loc scan.col_file}" /></DataTemplate>
+                                </DataGridTemplateColumn.HeaderTemplate>
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <Grid VerticalAlignment="Center" Margin="0,4">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <Path Width="13" Height="13" Margin="0,2,8,0" VerticalAlignment="Top"
+                                                  Stroke="{DynamicResource Brush.TextMuted}" StrokeThickness="1.4"
+                                                  Data="{DynamicResource Icon.File}" Stretch="Uniform" />
+                                            <TextBlock Grid.Column="1" Text="{Binding FilePath}" VerticalAlignment="Center"
+                                                       Foreground="{DynamicResource Brush.TextPrimary}"
+                                                       FontSize="11.5" TextWrapping="Wrap" TextTrimming="CharacterEllipsis"
+                                                       ToolTip="{Binding FilePath}" />
+                                        </Grid>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+
+                            <!-- Verdict Column -->
+                            <DataGridTemplateColumn Width="145">
+                                <DataGridTemplateColumn.HeaderTemplate>
+                                    <DataTemplate><TextBlock Text="{loc:Loc scan.col_verdict}" /></DataTemplate>
+                                </DataGridTemplateColumn.HeaderTemplate>
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <Border Padding="9,4" CornerRadius="6" HorizontalAlignment="Left" VerticalAlignment="Center">
+                                            <Border.Style>
+                                                <Style TargetType="Border">
+                                                    <Setter Property="Background" Value="{DynamicResource Brush.Warning}" />
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding Verdict}" Value="{x:Static core:ScanVerdict.Clean}">
+                                                            <Setter Property="Background" Value="{DynamicResource Brush.Success}" />
+                                                        </DataTrigger>
+                                                        <DataTrigger Binding="{Binding Verdict}" Value="{x:Static core:ScanVerdict.Trusted}">
+                                                            <Setter Property="Background" Value="{DynamicResource Brush.Success}" />
+                                                        </DataTrigger>
+                                                        <DataTrigger Binding="{Binding Verdict}" Value="{x:Static core:ScanVerdict.Malicious}">
+                                                            <Setter Property="Background" Value="{DynamicResource Brush.Danger}" />
+                                                        </DataTrigger>
+                                                        <DataTrigger Binding="{Binding Verdict}" Value="{x:Static core:ScanVerdict.PotentiallyUnwanted}">
+                                                            <Setter Property="Background" Value="{DynamicResource Brush.Danger}" />
+                                                        </DataTrigger>
+                                                        <DataTrigger Binding="{Binding Verdict}" Value="{x:Static core:ScanVerdict.StrongIndicator}">
+                                                            <Setter Property="Background" Value="{DynamicResource Brush.Danger}" />
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </Border.Style>
+                                            <TextBlock FontSize="10" FontWeight="SemiBold" Foreground="{DynamicResource Brush.PrimaryContent}" TextTrimming="CharacterEllipsis">
+                                                <TextBlock.Text>
+                                                    <MultiBinding Converter="{StaticResource VerdictTextConverter}">
+                                                        <Binding Path="Verdict" />
+                                                        <Binding Path="DataContext.Language" RelativeSource="{RelativeSource AncestorType={x:Type UserControl}}" />
+                                                    </MultiBinding>
+                                                </TextBlock.Text>
+                                            </TextBlock>
+                                        </Border>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+
+                            <!-- Threat Detection Name Column -->
+                            <DataGridTextColumn Width="170" Binding="{Binding ThreatName}" ElementStyle="{StaticResource Style.GridColumnText}">
+                                <DataGridTextColumn.HeaderTemplate>
+                                    <DataTemplate><TextBlock Text="{loc:Loc scan.col_threat}" /></DataTemplate>
+                                </DataGridTextColumn.HeaderTemplate>
+                            </DataGridTextColumn>
+
+                            <!-- Mitigation Action ComboBox Column -->
+                            <DataGridTemplateColumn Width="160">
+                                <DataGridTemplateColumn.HeaderTemplate>
+                                    <DataTemplate><TextBlock Text="{loc:Loc scan.col_action}" /></DataTemplate>
+                                </DataGridTemplateColumn.HeaderTemplate>
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <ComboBox Style="{DynamicResource Style.ComboBox}" ItemContainerStyle="{DynamicResource Style.ComboBoxItem}"
+                                                  SelectedValue="{Binding SelectedAction, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                  IsEnabled="{Binding IsThreat}"
+                                                  Height="30" Padding="8,2" VerticalAlignment="Center" Margin="0,2">
+                                            <models:ThreatResolutionAction>Quarantine</models:ThreatResolutionAction>
+                                            <models:ThreatResolutionAction>Delete</models:ThreatResolutionAction>
+                                            <models:ThreatResolutionAction>Ignore</models:ThreatResolutionAction>
+                                            <ComboBox.ItemTemplate>
+                                                <DataTemplate>
+                                                    <TextBlock Text="{Binding Converter={StaticResource ActionTextConverter}}" VerticalAlignment="Center" />
+                                                </DataTemplate>
+                                            </ComboBox.ItemTemplate>
+                                        </ComboBox>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+
+                            <!-- Status Column -->
+                            <DataGridTemplateColumn Width="120">
+                                <DataGridTemplateColumn.HeaderTemplate>
+                                    <DataTemplate><TextBlock Text="{loc:Loc scan.col_status}" /></DataTemplate>
+                                </DataGridTemplateColumn.HeaderTemplate>
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="{Binding Status}" VerticalAlignment="Center"
+                                                   FontSize="11.5" FontWeight="Normal"
+                                                   Foreground="{DynamicResource Brush.TextSecondary}" />
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+                        </DataGrid.Columns>
+                    </DataGrid>
+
+                    <!-- Empty state -->
+                    <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" IsHitTestVisible="False">
+                        <StackPanel.Style>
+                            <Style TargetType="StackPanel">
+                                <Setter Property="Visibility" Value="Collapsed" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding CurrentScanResults.Count}" Value="0">
+                                        <Setter Property="Visibility" Value="Visible" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </StackPanel.Style>
+                        <Border Width="44" Height="44" Background="{DynamicResource Brush.SurfaceSubtle}" HorizontalAlignment="Center">
+                            <Path Width="21" Height="21" HorizontalAlignment="Center" VerticalAlignment="Center" Stroke="{DynamicResource Brush.TextMuted}" StrokeThickness="1.5" Data="{DynamicResource Icon.Scan}" />
+                        </Border>
+                        <TextBlock Text="{loc:Loc scan.results_empty}" Margin="0,10,0,0" HorizontalAlignment="Center" FontSize="12" FontWeight="SemiBold" Foreground="{DynamicResource Brush.TextPrimary}" />
+                    </StackPanel>
+                </Grid>
+            </Border>
+
+            <!-- Bottom Detail Panel -->
+            <Border Grid.Row="4" Style="{DynamicResource Style.CardQuiet}" Padding="14">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <StackPanel>
+                        <TextBlock Text="{loc:Loc scan.col_file}" Style="{DynamicResource Style.SectionLabel}" />
+                        <TextBlock Text="{Binding SelectedScanResult.FilePath, FallbackValue='...'}" Margin="0,4,0,0" FontFamily="Consolas" FontSize="10.5" TextWrapping="Wrap" Foreground="{DynamicResource Brush.TextSecondary}" />
+                    </StackPanel>
+                </Grid>
+            </Border>
+        </Grid>
+    </Grid>
+</UserControl>

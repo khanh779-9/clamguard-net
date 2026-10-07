@@ -45,11 +45,7 @@ public sealed record CharacterClassAtom(CharacterClassKind Kind) : PatternAtom
         _ => 0
     };
 
-    public override int MaxLength => Kind switch
-    {
-        CharacterClassKind.LineBoundary => 2,
-        _ => MinLength
-    };
+    public override int MaxLength => MinLength;
 }
 
 /// <summary>

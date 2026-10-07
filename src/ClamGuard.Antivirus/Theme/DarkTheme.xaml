@@ -1,0 +1,47 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!-- Semantic design tokens: dark -->
+    <SolidColorBrush x:Key="Brush.WindowBackground" Color="#0C0F12" />
+    <SolidColorBrush x:Key="Brush.WindowFrame" Color="#11161B" />
+    <SolidColorBrush x:Key="Brush.WindowBorder" Color="#28313A" />
+    <SolidColorBrush x:Key="Brush.TitleBar" Color="#11161B" />
+    <SolidColorBrush x:Key="Brush.TitleBarButtonHover" Color="#1A2128" />
+    <SolidColorBrush x:Key="Brush.TitleBarButtonPressed" Color="#232B33" />
+    <SolidColorBrush x:Key="Brush.Sidebar" Color="#101419" />
+    <SolidColorBrush x:Key="Brush.SidebarItemHover" Color="#1B2128" />
+    <SolidColorBrush x:Key="Brush.SidebarItemSelected" Color="#20262E" />
+    <SolidColorBrush x:Key="Brush.SidebarItemSelectedText" Color="#F8FAFC" />
+    <SolidColorBrush x:Key="Brush.SidebarAccent" Color="#E04B58" />
+    <SolidColorBrush x:Key="Brush.Surface" Color="#151A20" />
+    <SolidColorBrush x:Key="Brush.SurfaceElevated" Color="#181E25" />
+    <SolidColorBrush x:Key="Brush.SurfaceSubtle" Color="#12171C" />
+    <SolidColorBrush x:Key="Brush.SurfaceTint" Color="#261519" />
+    <SolidColorBrush x:Key="Brush.Input" Color="#12171C" />
+    <SolidColorBrush x:Key="Brush.InputHover" Color="#171D24" />
+    <SolidColorBrush x:Key="Brush.InputDisabled" Color="#1B2026" />
+    <SolidColorBrush x:Key="Brush.Border" Color="#29323B" />
+    <SolidColorBrush x:Key="Brush.BorderStrong" Color="#3B4651" />
+    <SolidColorBrush x:Key="Brush.TextPrimary" Color="#F5F7F9" />
+    <SolidColorBrush x:Key="Brush.TextSecondary" Color="#C0C8D1" />
+    <SolidColorBrush x:Key="Brush.TextMuted" Color="#87929D" />
+    <SolidColorBrush x:Key="Brush.TextDisabled" Color="#5F6974" />
+    <SolidColorBrush x:Key="Brush.Primary" Color="#E04B58" />
+    <SolidColorBrush x:Key="Brush.PrimaryHover" Color="#EA5A66" />
+    <SolidColorBrush x:Key="Brush.PrimaryPressed" Color="#C83C49" />
+    <SolidColorBrush x:Key="Brush.PrimarySoft" Color="#35191F" />
+    <SolidColorBrush x:Key="Brush.PrimaryContent" Color="#FFFFFF" />
+    <SolidColorBrush x:Key="Brush.Success" Color="#39C995" />
+    <SolidColorBrush x:Key="Brush.SuccessSoft" Color="#102D24" />
+    <SolidColorBrush x:Key="Brush.SuccessBorder" Color="#245443" />
+    <SolidColorBrush x:Key="Brush.Warning" Color="#F0B34E" />
+    <SolidColorBrush x:Key="Brush.WarningSoft" Color="#352812" />
+    <SolidColorBrush x:Key="Brush.WarningBorder" Color="#6A5127" />
+    <SolidColorBrush x:Key="Brush.Danger" Color="#F06A73" />
+    <SolidColorBrush x:Key="Brush.DangerSoft" Color="#3A181D" />
+    <SolidColorBrush x:Key="Brush.DangerBorder" Color="#70323A" />
+    <SolidColorBrush x:Key="Brush.Focus" Color="#B9C3CE" />
+    <SolidColorBrush x:Key="Brush.Disabled" Color="#343B43" />
+    <SolidColorBrush x:Key="Brush.Overlay" Color="#B0000000" />
+    <DropShadowEffect x:Key="Effect.CardShadow" BlurRadius="24" ShadowDepth="5" Opacity="0.20" />
+    <DropShadowEffect x:Key="Effect.DialogShadow" BlurRadius="42" ShadowDepth="10" Opacity="0.42" />
+</ResourceDictionary>

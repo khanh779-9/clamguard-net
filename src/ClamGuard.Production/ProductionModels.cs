@@ -15,8 +15,8 @@ public sealed class ProductionScanOptions
     {
         if (MaxConcurrentScans is < 1 or > 1024) throw new ArgumentOutOfRangeException(nameof(MaxConcurrentScans));
         if (MaxQueuedScans is < 0 or > 100_000) throw new ArgumentOutOfRangeException(nameof(MaxQueuedScans));
-        if (QueueWaitTimeout <= TimeSpan.Zero || QueueWaitTimeout > TimeSpan.FromHours(1)) throw new ArgumentOutOfRangeException(nameof(QueueWaitTimeout));
-        if (ScanTimeout <= TimeSpan.Zero || ScanTimeout > TimeSpan.FromHours(24)) throw new ArgumentOutOfRangeException(nameof(ScanTimeout));
+        if (QueueWaitTimeout != System.Threading.Timeout.InfiniteTimeSpan && (QueueWaitTimeout <= TimeSpan.Zero || QueueWaitTimeout > TimeSpan.FromHours(24))) throw new ArgumentOutOfRangeException(nameof(QueueWaitTimeout));
+        if (ScanTimeout != System.Threading.Timeout.InfiniteTimeSpan && (ScanTimeout <= TimeSpan.Zero || ScanTimeout > TimeSpan.FromHours(24))) throw new ArgumentOutOfRangeException(nameof(ScanTimeout));
     }
 }
 

@@ -525,15 +525,20 @@ public static class SignatureParser
                         offset = fields[0].Length == 0 ? "*" : fields[0];
                         patternText = fields[1];
                         break;
-                    case 3 when fields[1].Length == 0 && fields[2].Length > 0:
+                    case 3 when fields[1].Length == 0:
                         offset = "*";
                         patternText = fields[0];
-                        modifierText = fields[2];
+                        modifierText = fields[2].Length > 0 ? fields[2] : null;
+                        break;
+                    case 3:
+                        offset = fields[0].Length == 0 ? "*" : fields[0];
+                        patternText = fields[1];
+                        modifierText = fields[2].Length > 0 ? fields[2] : null;
                         break;
                     case 4:
                         offset = fields[0].Length == 0 ? "*" : fields[0];
                         patternText = fields[1];
-                        modifierText = fields[3];
+                        modifierText = fields[3].Length > 0 ? fields[3] : null;
                         break;
                     default:
                         throw new FormatException($"Invalid LDB content subsignature format in {path}: {token}");
@@ -593,18 +598,11 @@ public static class SignatureParser
 
     private static (int Start, int End)? FindRegexDelimiters(string token)
     {
-        var first = -1;
-        var escaped = false;
-        for (var i = 0; i < token.Length; i++)
-        {
-            var c = token[i];
-            if (escaped) { escaped = false; continue; }
-            if (c == '\\') { escaped = true; continue; }
-            if (c != '/') continue;
-            if (first < 0) first = i;
-            else return (first, i);
-        }
-        return null;
+        var first = token.IndexOf('/');
+        if (first <= 0) return null;
+        var last = token.LastIndexOf('/');
+        if (last <= first) return null;
+        return (first, last);
     }
 
     private static LdbRegexSubSignature ParseRegexSubSignature(int index, string token, string path, string line)
@@ -642,7 +640,8 @@ public static class SignatureParser
     {
         var open = token.IndexOf('(');
         return open > 0 && token.EndsWith(')') &&
-               int.TryParse(token[..open], out _);
+               int.TryParse(token[..open], out _) &&
+               token.IndexOf('#', open) > open;
     }
 
     private static LdbByteCompareSubSignature ParseByteCompareSubSignature(int index, string token, string path, string line)

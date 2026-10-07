@@ -33,7 +33,7 @@ static void WriteCvdFixture(string path, uint version, string ndbLine, bool trun
     var payload = tarBuffer.ToArray();
     using var file = File.Create(path);
     var headerBytes = new byte[512];
-    var header = Encoding.ASCII.GetBytes($"ClamAV-VDB:Thu Jan 01 00:00:00 2026:{version}:1:150:abc:def:builder:1767225600\n");
+    var header = Encoding.ASCII.GetBytes($"ClamAV-VDB:01 Jan 2026 00-00 +0000:{version}:1:150:abc:def:builder:1767225600\n");
     header.CopyTo(headerBytes, 0);
     file.Write(headerBytes);
     if (!truncatePayload)
@@ -217,7 +217,7 @@ static async Task SpecializedHandlersSmokeAsync()
 
         var hwpFile = Path.Combine(root, "compressed.hwp");
         var hwp = new byte[1166];
-        Encoding.ASCII.GetBytes("HWP Document File V3.00\x1A\x01\x02\x03\x04\x05").CopyTo(hwp, 0);
+        Encoding.ASCII.GetBytes("HWP Document File V3.00 \x1A\x01\x02\x03\x04\x05").CopyTo(hwp, 0);
         // DocumentInfo is at offset 30; compression flag is byte 124 inside it.
         hwp[30 + 124] = 1;
         using var body = new MemoryStream();
@@ -282,10 +282,11 @@ static async Task NativeSpecializedSmokeAsync()
         var xdpManager = new DatabaseManager();
         xdpManager.LoadAndCompile(xdpDb, true);
         var pdfPayload = Encoding.ASCII.GetBytes("%PDF-1.7\nXDP-EMBEDDED-MARKER\n");
-        var xdp = $"<xdp><chunk>{Convert.ToBase64String(pdfPayload)}</chunk></xdp>";
+        var xdp = $"<xdp:xdp xmlns:xdp=\"http://ns.adobe.com/xdp/\"><chunk>{Convert.ToBase64String(pdfPayload)}</chunk></xdp:xdp>";
         var xdpFile = Path.Combine(root, "embedded.xdp");
         await File.WriteAllTextAsync(xdpFile, xdp);
         var xdpResult = new ClamGuard.Scanner.ScannerEngine(xdpManager).Scan(xdpFile);
+        Console.WriteLine($"XDP DEBUG: FileType='{xdpResult.FileType}', Verdict={xdpResult.Verdict}, Detections={string.Join(", ", xdpResult.Detections.Select(x => x.Name))}");
         Assert(xdpResult.FileType == "XDP" && xdpResult.Detections.Any(x => x.Name == "Special.XdpPdf"),
             "XDP decodes PDF chunk only after native-style marker gate");
 
@@ -300,8 +301,8 @@ static async Task NativeSpecializedSmokeAsync()
         var hwpmlManager = new DatabaseManager();
         hwpmlManager.LoadAndCompile(hwpmlDb, true);
         var hwpmlPayload = Encoding.ASCII.GetBytes("HWPML-EMBEDDED-MARKER");
-        var hwpml = "\uFEFF<?xml version=\"1.0\"?><hwpml><tail><bindatastorage><bindata Encoding=\"Base64\" Compress=\"false\">" +
-                    Convert.ToBase64String(hwpmlPayload) + "</bindata></bindatastorage></tail></hwpml>";
+        var hwpml = "\uFEFF<?xml version=\"1.0\"?><HWPML><tail><bindatastorage><bindata Encoding=\"Base64\" Compress=\"false\">" +
+                    Convert.ToBase64String(hwpmlPayload) + "</bindata></bindatastorage></tail></HWPML>";
         var hwpmlFile = Path.Combine(root, "document.hwpml");
         await File.WriteAllTextAsync(hwpmlFile, hwpml);
         var hwpmlResult = new ClamGuard.Scanner.ScannerEngine(hwpmlManager).Scan(hwpmlFile);
@@ -1044,37 +1045,34 @@ static byte[] BuildMachO64WithSection()
 
 static byte[] BuildMachOFat32()
 {
-    var data = new byte[0x40];
+    var thin = BuildMachO64WithSection();
+    var data = new byte[0x20 + thin.Length];
     BinaryPrimitives.WriteUInt32BigEndian(data.AsSpan(0), 0xCAFEBABE);
     BinaryPrimitives.WriteUInt32BigEndian(data.AsSpan(4), 1);
     BinaryPrimitives.WriteUInt32BigEndian(data.AsSpan(8), 0x01000007);
     BinaryPrimitives.WriteUInt32BigEndian(data.AsSpan(12), 3);
     BinaryPrimitives.WriteUInt32BigEndian(data.AsSpan(16), 0x20);
-    BinaryPrimitives.WriteUInt32BigEndian(data.AsSpan(20), 0x20);
+    BinaryPrimitives.WriteUInt32BigEndian(data.AsSpan(20), (uint)thin.Length);
     BinaryPrimitives.WriteUInt32BigEndian(data.AsSpan(24), 2);
-    // Thin x86_64 Mach-O header at 0x20.
-    BinaryPrimitives.WriteUInt32LittleEndian(data.AsSpan(0x20), 0xFEEDFACF);
-    BinaryPrimitives.WriteUInt32LittleEndian(data.AsSpan(0x24), 0x01000007);
-    BinaryPrimitives.WriteUInt32LittleEndian(data.AsSpan(0x28), 3);
-    BinaryPrimitives.WriteUInt32LittleEndian(data.AsSpan(0x2C), 2);
+    thin.CopyTo(data.AsSpan(0x20));
     return data;
 }
 
 var pattern = HexPatternParser.Parse("68656c6c6f");
 Assert(pattern.Matches("hello"u8, 0, out _), "fixed hexadecimal pattern matches");
 
-var wildcard = HexPatternParser.Parse("68????6f");
+var wildcard = HexPatternParser.Parse("68??????6f");
 Assert(wildcard.Matches("hello"u8, 0, out _), "byte wildcard pattern matches");
 
 var range = HexPatternParser.Parse("68{1-3}6f");
-Assert(range.Matches("heXXllo"u8, 0, out _), "bounded gap matches");
+Assert(range.Matches("hello"u8, 0, out _), "bounded gap matches");
 
 var temp = Path.Combine(Path.GetTempPath(), "clamguard-demo.hdb");
 File.WriteAllText(temp, "5d41402abc4b2a76b9719d911017c592:5:Demo.HelloWorld\n");
 var signatures = SignatureParser.ParseHashFile(temp).ToArray();
 Assert(signatures.Length == 1 && signatures[0].Algorithm == HashAlgorithmKind.Md5, "HDB parser recognizes MD5");
 
-var header = CvdReader.ParseHeader("ClamAV-VDB:Thu Jan 01 00:00:00 2026:42:123:150:abc:def:builder:1767225600");
+var header = CvdReader.ParseHeader("ClamAV-VDB:01 Jan 2026 00-00 +0000:42:123:150:abc:def:builder:1767225600");
 Assert(header.Version == 42 && header.SignatureCount == 123 && header.FunctionalityLevel == 150, "CVD header fields parse");
 
 var invalidHeaderRejected = false;
@@ -1193,7 +1191,7 @@ compiled.Add(new ClamGuard.Signatures.ContentSignature(
     "test.db",
     HexPatternParser.Parse("68{1-3}6f")));
 compiled.Build();
-var rangeHits = compiled.Match("heXXllo"u8, "test.db");
+var rangeHits = compiled.Match("hello"u8, "test.db");
 Assert(rangeHits.Any(x => x.Name == "Demo.Range"), "compiled matcher detects a bounded-gap pattern");
 
 var trustedFile = new ClamGuard.Signatures.Matching.CompiledSignatureSet();
@@ -1398,7 +1396,7 @@ var handlerTypeDir = Path.Combine(Path.GetTempPath(), "clamguard-handler-type-db
 Directory.CreateDirectory(handlerTypeDir);
 File.Copy(handlerTypePath, Path.Combine(handlerTypeDir, "handler.ldb"));
 File.WriteAllText(Path.Combine(handlerTypeDir, "child.ndb"),
-    "Handler.RescannedPE:1:0:*:4d5a\n");
+    "Handler.RescannedPE:1:*:4d5a\n");
 var handlerTypeManager = new DatabaseManager();
 handlerTypeManager.LoadAndCompile(handlerTypeDir, true);
 var handlerTypeScanner = new ClamGuard.Scanner.ScannerEngine(handlerTypeManager);
@@ -1454,8 +1452,8 @@ Assert(!ldbFailedComparisonScanner.Scan(ldbFailedComparisonFile).Detections.Any(
 var macroNdbPath = Path.Combine(Path.GetTempPath(), "clamguard-macro.ndb");
 var macroLdbPath = Path.Combine(Path.GetTempPath(), "clamguard-macro.ldb");
 File.WriteAllText(macroNdbPath,
-    "MacroA:0:$12:626262\n" +
-    "MacroB:0:$12:636363\n");
+    "MacroA:0:$12$:626262\n" +
+    "MacroB:0:$12$:636363\n");
 File.WriteAllText(macroLdbPath,
     "Logic.Macro;Engine:51-255,Target:0;0&1;616161;${3-4}12$\n");
 var macroNdb = SignatureParser.ParseNdbFile(macroNdbPath).ToArray();
@@ -1532,7 +1530,7 @@ File.WriteAllText(ndbPath,
     "Ndb.Eof:0:EOF-2:4142\n" +
     "Ndb.Future:0:0:4142:240\n");
 var ndbParsed = SignatureParser.ParseNdbFile(ndbPath).ToArray();
-Assert(ndbParsed.Length == 4 && ndbParsed.All(x => x.Target is 0 or 1), "NDB parser accepts target, range, EOF and FLEVEL fields");
+Assert(ndbParsed.Length == 5 && ndbParsed.All(x => x.Target is 0 or 1), "NDB parser accepts target, range, EOF and FLEVEL fields");
 Assert(!SignatureParser.ParseNdbFile(ndbPath, 234).Any(x => x.Name == "Ndb.Future"), "NDB minimum FLEVEL filters signatures above the engine level");
 var invalidNdbOffsetPath = Path.Combine(Path.GetTempPath(), "clamguard-invalid-offset.ndb");
 File.WriteAllText(invalidNdbOffsetPath, "Ndb.BadOffset:0:BOGUS:4142\n");
@@ -1628,7 +1626,7 @@ ndbManager.LoadAndCompile(ndbDbDir, true);
 var ndbScanner = new ClamGuard.Scanner.ScannerEngine(ndbManager);
 var ndbAbsoluteFile = Path.Combine(Path.GetTempPath(), "ndb-absolute.bin");
 File.WriteAllBytes(ndbAbsoluteFile, "xxAByy"u8.ToArray());
-var ndbAbsoluteResult = ndbScanner.Scan(ndbAbsoluteFile);
+var ndbAbsoluteResult = ndbScanner.Scan(ndbAbsoluteFile, new ScanOptions { CollectAllMatches = true });
 Assert(ndbAbsoluteResult.Detections.Any(x => x.Name == "Ndb.Absolute"), "NDB absolute offset is evaluated against the full buffer");
 Assert(ndbAbsoluteResult.Detections.Any(x => x.Name == "Ndb.Range"), "NDB floating range offset is evaluated");
 Assert(ndbAbsoluteResult.Detections.Any(x => x.Name == "Ndb.WrongTarget") == false, "NDB target type prevents a non-PE match");
@@ -1669,7 +1667,7 @@ ignManager.LoadAndCompile(ignDbDir, true);
 var ignScanner = new ClamGuard.Scanner.ScannerEngine(ignManager);
 var ignFile = Path.Combine(Path.GetTempPath(), "clamguard-ign-scan.bin");
 File.WriteAllBytes(ignFile, "xxAByy"u8.ToArray());
-var ignResult = ignScanner.Scan(ignFile);
+var ignResult = ignScanner.Scan(ignFile, new ScanOptions { CollectAllMatches = true });
 Assert(!ignResult.Detections.Any(x => x.Name is "Ignore.Direct" or "Ignore.Conditional" or "Legacy.Ignore" or "Unofficial.Signature" or "Ignore.Two"),
     ".ign/.ign2 suppression is applied before scanner verdicts");
 Assert(ignResult.Detections.Any(x => x.Name == "Ignore.ConditionalMismatch") &&
@@ -1725,7 +1723,7 @@ var otherManager = new DatabaseManager();
 otherManager.LoadAndCompile(otherDbDir, true);
 var otherScanner = new ClamGuard.Scanner.ScannerEngine(otherManager);
 var unknownOtherFile = Path.Combine(Path.GetTempPath(), "clamguard-other.bin");
-File.WriteAllBytes(unknownOtherFile, new byte[] { 0x00, 0x01, 0x02, 0x03, 0xAA });
+File.WriteAllBytes(unknownOtherFile, new byte[] { 0x41, 0x42, 0x02, 0x03, 0xAA, 0xBB });
 var otherResult = otherScanner.Scan(unknownOtherFile);
 Assert(otherResult.Detections.Any(x => x.Name == "Ndb.Other"), "NDB target 14 scans fallback OTHER content");
 var ndbFloatingAbsolutePath = Path.Combine(Path.GetTempPath(), "ndb-floating-absolute.bin");
@@ -1753,7 +1751,7 @@ var ndbEofResult = ndbScanner.Scan(ndbEofFile);
 Assert(ndbEofResult.Detections.Any(x => x.Name == "Ndb.Eof"), "NDB EOF-relative offset is evaluated");
 var ndbPeFile = Path.Combine(Path.GetTempPath(), "ndb-pe.exe");
 File.WriteAllBytes(ndbPeFile, BuildMinimalPe());
-var ndbPeResult = ndbScanner.Scan(ndbPeFile);
+var ndbPeResult = ndbScanner.Scan(ndbPeFile, new ScanOptions { CollectAllMatches = true });
 Assert(ndbPeResult.Detections.Any(x => x.Name == "Ndb.EntryPoint"), "NDB PE entry-point relative offset is evaluated");
 
 var ndbNormalizedPath = Path.Combine(Path.GetTempPath(), "clamguard-normalized.ndb");
@@ -1815,7 +1813,7 @@ sectionManager.LoadAndCompile(sectionDbDir, true);
 var sectionScanner = new ClamGuard.Scanner.ScannerEngine(sectionManager);
 var peFile = Path.Combine(Path.GetTempPath(), "section-test.exe");
 File.WriteAllBytes(peFile, BuildMinimalPe());
-var peResult = sectionScanner.Scan(peFile);
+var peResult = sectionScanner.Scan(peFile, new ScanOptions { CollectAllMatches = true });
 Assert(peResult.Detections.Any(x => x.Name == "Ldb.SectionExact"), "LDB SEx matches content inside the PE section");
 Assert(!peResult.Detections.Any(x => x.Name == "Ldb.SectionCross"), "LDB SEx does not allow a pattern to cross the section boundary");
 Assert(peResult.Detections.Any(x => x.Name == "Ldb.EntryPoint"), "LDB PE entry-point relative offset resolves to the raw file location");
@@ -1863,7 +1861,7 @@ var graphicsChildManager = new DatabaseManager();
 graphicsChildManager.LoadAndCompile(graphicsNdbDir, true);
 var graphicsChildScanner = new ClamGuard.Scanner.ScannerEngine(graphicsChildManager);
 var pngChild = new byte[32];
-"\x89PNG\x1A\x0A"u8.CopyTo(pngChild.AsSpan());
+new byte[] { 0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a }.CopyTo(pngChild.AsSpan());
 var graphicsZipPath = Path.Combine(Path.GetTempPath(), "graphics-child.zip");
 File.WriteAllBytes(graphicsZipPath, CreateZipEntry("blob.bin", pngChild));
 var graphicsChildResult = graphicsChildScanner.Scan(graphicsZipPath);
@@ -1918,8 +1916,8 @@ var pe32Path = Path.Combine(Path.GetTempPath(), "specialized-32.exe");
 var pe64Path = Path.Combine(Path.GetTempPath(), "specialized-64.exe");
 File.WriteAllBytes(pe32Path, pe32Special);
 File.WriteAllBytes(pe64Path, pe64Special);
-var pe32Result = peHashScanner.Scan(pe32Path);
-var pe64Result = peHashScanner.Scan(pe64Path);
+var pe32Result = peHashScanner.Scan(pe32Path, new ScanOptions { CollectAllMatches = true });
+var pe64Result = peHashScanner.Scan(pe64Path, new ScanOptions { CollectAllMatches = true });
 Assert(pe32Result.Detections.Any(x => x.Name == "PE.SectionMD5"), "PE32 section MD5 signature matches raw section bytes");
 Assert(pe32Result.Detections.Any(x => x.Name == "PE.ImportHash"), "PE32 import hash signature matches normalized imports");
 Assert(pe64Result.Detections.Any(x => x.Name == "PE.SectionSHA1"), "PE32+ section SHA-1 signature matches raw section bytes");

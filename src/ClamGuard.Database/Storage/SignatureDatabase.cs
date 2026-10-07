@@ -14,6 +14,7 @@ public sealed class SignatureDatabase
     public SpecialDatabaseStore SpecialDatabases { get; } = new();
     public bool HasSelfProtectionSignatures => _signatures.OfType<NdbSignature>().Any(static x => x.IsSelfProtection);
 
+    public void Add(Signature signature) => _signatures.Add(signature);
     public void AddRange(IEnumerable<Signature> signatures) => _signatures.AddRange(signatures);
 
     public CompiledSignatureSet Compile()

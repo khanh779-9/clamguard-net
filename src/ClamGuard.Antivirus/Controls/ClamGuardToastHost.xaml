@@ -1,0 +1,17 @@
+<UserControl x:Class="ClamGuard.Antivirus.Controls.ClamGuardToastHost"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             IsHitTestVisible="True">
+    <ItemsControl ItemsSource="{Binding Items, RelativeSource={RelativeSource AncestorType={x:Type UserControl}}}">
+        <ItemsControl.ItemsPanel>
+            <ItemsPanelTemplate>
+                <StackPanel />
+            </ItemsPanelTemplate>
+        </ItemsControl.ItemsPanel>
+        <ItemsControl.ItemTemplate>
+            <DataTemplate>
+                <ContentPresenter Content="{Binding}" Margin="0,0,0,8" />
+            </DataTemplate>
+        </ItemsControl.ItemTemplate>
+    </ItemsControl>
+</UserControl>

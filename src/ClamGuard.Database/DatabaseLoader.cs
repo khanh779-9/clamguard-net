@@ -38,6 +38,12 @@ public sealed class DatabaseLoader
     /// <summary>Load PUA signatures except those whose second name token matches one of these categories.</summary>
     public IReadOnlyCollection<string> ExcludePuaCategories { get; init; } = Array.Empty<string>();
 
+    /// <summary>
+    /// Optional persistent cache directory for extracted container files (.cvd/.cld/.cud).
+    /// If specified, archives are only extracted once per version/MD5, avoiding redundant disk I/O and temp extraction.
+    /// </summary>
+    public string? CacheDirectory { get; init; }
+
     public DatabaseLoadResult LoadDirectory(string directory, bool failOnInvalidFile = false, bool verifyContainers = true)
     {
         if (!Directory.Exists(directory)) throw new DirectoryNotFoundException(directory);
@@ -159,10 +165,46 @@ public sealed class DatabaseLoader
                         }
                         infos.Add(ToInfo(Path.GetFileName(path), header, isVerified: verified));
 
-                        var temp = Path.Combine(Path.GetTempPath(), $"clamguard-cvd-{Guid.NewGuid():N}");
-                        tempRoots.Add(temp);
-                        CvdReader.Extract(path, temp);
-                        LoadTextFiles(temp, db, infos, errors, failOnInvalidFile, ignoreRules);
+                        var usePersistentCache = !string.IsNullOrWhiteSpace(CacheDirectory);
+                        string containerExtractDir;
+                        var isCacheValid = false;
+
+                        if (usePersistentCache)
+                        {
+                            var safeName = Path.GetFileNameWithoutExtension(path);
+                            containerExtractDir = Path.Combine(CacheDirectory!, $"{safeName}_{header.Version}_{header.Md5}");
+                            var tagPath = Path.Combine(containerExtractDir, ".complete");
+                            if (Directory.Exists(containerExtractDir) && File.Exists(tagPath))
+                            {
+                                isCacheValid = true;
+                            }
+                        }
+                        else
+                        {
+                            containerExtractDir = Path.Combine(Path.GetTempPath(), $"clamguard-cvd-{Guid.NewGuid():N}");
+                            tempRoots.Add(containerExtractDir);
+                        }
+
+                        if (!isCacheValid)
+                        {
+                            if (usePersistentCache && Directory.Exists(containerExtractDir))
+                            {
+                                try { Directory.Delete(containerExtractDir, true); } catch { /* Ignore */ }
+                            }
+
+                            CvdReader.Extract(path, containerExtractDir);
+
+                            if (usePersistentCache)
+                            {
+                                try
+                                {
+                                    File.WriteAllText(Path.Combine(containerExtractDir, ".complete"), $"{header.Version}:{header.Md5}");
+                                }
+                                catch { /* Best-effort cache marker */ }
+                            }
+                        }
+
+                        LoadTextFiles(containerExtractDir, db, infos, errors, failOnInvalidFile, ignoreRules);
                         continue;
                     }
 
@@ -406,19 +448,26 @@ public sealed class DatabaseLoader
         }
 
         var isPuaDatabase = IsPuaDatabasePath(path);
-        var signatures = SignatureParser.ParseFile(path, EngineFunctionalityLevel)
-            .Where(signature => !isPuaDatabase || ShouldLoadPuaSignature(signature.Name))
-            .Where(signature => !ignoreRules.ShouldIgnore(signature))
-            .ToArray();
-        if (signatures.Length == 0)
+        var count = 0;
+        foreach (var signature in SignatureParser.ParseFile(path, EngineFunctionalityLevel))
+        {
+            if (isPuaDatabase && !ShouldLoadPuaSignature(signature.Name))
+                continue;
+            if (ignoreRules.ShouldIgnore(signature))
+                continue;
+
+            db.Add(signature);
+            count++;
+        }
+
+        if (count == 0)
             return;
 
-        db.AddRange(signatures);
         infos.Add(new DatabaseInfo(
             Path.GetFileName(path),
             DatabaseFormat.TextSignature,
             0,
-            (uint)signatures.Length,
+            (uint)count,
             (uint)EngineFunctionalityLevel,
             null,
             null,
@@ -522,7 +571,6 @@ public sealed class DatabaseLoader
             count++;
         }
         AddSpecialInfo(path, count, infos);
-        if (count == 0) throw new InvalidDataException($"Empty or unsupported DCONF database: {path}");
     }
 
     private static bool TryParseDconf(string line, out string module, out uint value, out int? min, out int? max)
@@ -730,7 +778,9 @@ public sealed class DatabaseLoader
         var count = 0;
         foreach (var line in lines.Skip(1))
         {
-            var parts = line.Split(';');
+            if (line.StartsWith("DSIG:", StringComparison.Ordinal)) break;
+            var delimiter = line.Contains(':') ? ':' : ';';
+            var parts = line.Split(delimiter, 3);
             if (parts.Length != 3) throw new FormatException($"Invalid INFO VDB line in {path}: {line}");
             if (string.IsNullOrWhiteSpace(parts[0]) || !long.TryParse(parts[1], out var size) || size < 0)
                 throw new FormatException($"Invalid INFO size/name in {path}: {line}");

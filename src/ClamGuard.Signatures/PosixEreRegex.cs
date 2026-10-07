@@ -36,9 +36,17 @@ public sealed class PosixEreRegex
         {
             var c = pattern[i];
 
-            // POSIX ERE has no Perl-style grouping/assertion syntax.
+            // Allow standard case-sensitivity flags like (?i) or (?-i) used in ClamAV signatures.
             if (c == '(' && i + 1 < pattern.Length && pattern[i + 1] == '?')
+            {
+                if (pattern.AsSpan(i).StartsWith("(?i)") || pattern.AsSpan(i).StartsWith("(?-i)"))
+                {
+                    sb.Append(pattern[i..(i + 4)]);
+                    i += 3;
+                    continue;
+                }
                 throw new ArgumentException("POSIX ERE does not support '(?' constructs.", nameof(pattern));
+            }
 
             // Lazy quantifiers are .NET/Perl syntax, not POSIX ERE.
             if ((c is '*' or '+' or '?') && i + 1 < pattern.Length && pattern[i + 1] == '?')

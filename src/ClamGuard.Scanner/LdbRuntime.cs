@@ -25,7 +25,7 @@ internal sealed record LdbScanContext(
     IReadOnlyList<string> ParentTypes,
     bool Retyped = false);
 
-internal readonly record struct LdbOffsetRange(int Start, int EndInclusive)
+internal readonly record struct LdbOffsetRange(int Start, int EndInclusive, int MaxBound = int.MaxValue)
 {
     public bool IsValid => Start >= 0 && EndInclusive >= Start;
 }
@@ -222,8 +222,9 @@ internal static class LdbRuntime
             if (section.RawSize <= 0) return [];
             var start = section.RawOffset;
             var end = section.RawOffset + section.RawSize - 1L + maxShift;
+            var maxBound = section.RawOffset + section.RawSize;
             if (start < 0 || start > int.MaxValue || end < start) return [];
-            return [new((int)start, (int)Math.Min(int.MaxValue, end))];
+            return [new((int)start, (int)Math.Min(int.MaxValue, end), (int)Math.Min(int.MaxValue, maxBound))];
         }
         if (expression.StartsWith("S", StringComparison.OrdinalIgnoreCase))
         {

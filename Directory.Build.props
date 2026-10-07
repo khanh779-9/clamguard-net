@@ -6,5 +6,9 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <LangVersion>latest</LangVersion>
     <Deterministic>true</Deterministic>
+    <Version>1.1.0</Version>
+    <AssemblyVersion>1.1.0.0</AssemblyVersion>
+    <FileVersion>1.1.0.0</FileVersion>
+    <InformationalVersion>1.1.0-simd-optimized</InformationalVersion>
   </PropertyGroup>
 </Project>

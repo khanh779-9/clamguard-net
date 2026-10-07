@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "ClamGuard.Antivirus": {
+      "commandName": "Project",
+      "nativeDebugging": false
+    }
+  }
+}

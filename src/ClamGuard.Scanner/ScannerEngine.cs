@@ -284,7 +284,13 @@ public sealed class ScannerEngine
                         cancellationToken));
                     if (!options.CollectAllMatches && detections.Count != 0)
                         return new ScanResult(ScanVerdict.Malicious, path, rootType, detections.Take(1).ToArray(), rawMatch.BytesRead, started.Elapsed, state.Database.Databases.FirstOrDefault());
-                    detections.AddRange(EvaluateLogical(logicalSignatures, ndbSignatures, fullData, options.Limits, signatureFileType, state.Database.IconDatabase, [], cancellationToken, scanState: state, scanOptions: options));
+                    var applicableLogical = logicalSignatures
+                        .Where(x => LdbRuntime.TargetMatchesFileType(x.Target?.Target ?? 0, signatureFileType) &&
+                                    (x.Target?.MinFileSize is null || fullData.Length >= x.Target.MinFileSize.Value) &&
+                                    (x.Target?.MaxFileSize is null || fullData.Length <= x.Target.MaxFileSize.Value))
+                        .ToArray();
+
+                    detections.AddRange(EvaluateLogical(applicableLogical, ndbSignatures, fullData, options.Limits, signatureFileType, state.Database.IconDatabase, [], cancellationToken, scanState: state, scanOptions: options));
                     if (!options.CollectAllMatches && detections.Count != 0)
                         return new ScanResult(ScanVerdict.Malicious, path, rootType, detections.Take(1).ToArray(), rawMatch.BytesRead, started.Elapsed, state.Database.Databases.FirstOrDefault());
                 }
@@ -347,6 +353,10 @@ public sealed class ScannerEngine
                 : distinct.Length == 0 ? ScanVerdict.Clean : ScanVerdict.Malicious;
 
             return new ScanResult(verdict, path, rootType, distinct, rawMatch.BytesRead, started.Elapsed, state.Database.Databases.FirstOrDefault());
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch (OperationCanceledException)
         {
@@ -475,7 +485,52 @@ public sealed class ScannerEngine
             }
         }
 
-        return ScanPeOverlay(overlay, state, options, cancellationToken);
+        return ScanPeOverlayData(overlay, overlayOffset, state, options, cancellationToken);
+    }
+
+    private static IReadOnlyList<Detection> ScanPeOverlayData(
+        ReadOnlySpan<byte> overlay,
+        long overlayOffset,
+        CompiledState state,
+        ScanOptions options,
+        CancellationToken cancellationToken)
+    {
+        if (overlay.Length == 0 || overlay.Length > options.Limits.MaxEmbeddedStreamSize)
+            return [];
+        if (state.Compiled.MatchesFalsePositive(overlay))
+            return [];
+
+        var parentTypes = new[] { "PE" };
+        var path = $"overlay@{overlayOffset}";
+        var fileType = DetectType(overlay, path, state.Database.SpecialDatabases.FileTypes);
+        var results = new List<Detection>();
+
+        foreach (var hit in state.Compiled.Match(overlay, path, includeNdb: false))
+            results.Add(hit.Offset is null ? hit : hit with { Offset = hit.Offset.Value + overlayOffset });
+
+        var ndb = state.Database.Signatures.OfType<NdbSignature>().ToArray();
+        foreach (var hit in EvaluateNdb(ndb, overlay, options.Limits, fileType, cancellationToken))
+            results.Add(hit.Offset is null ? hit : hit with { Offset = hit.Offset.Value + overlayOffset });
+
+        foreach (var hit in EvaluateLogical(state.Database.Signatures.OfType<LogicalSignature>(), ndb, overlay, options.Limits, fileType, state.Database.IconDatabase, parentTypes, cancellationToken, scanState: state, scanOptions: options))
+            results.Add(hit.Offset is null ? hit : hit with { Offset = hit.Offset.Value + overlayOffset });
+
+        if (ScanTypePolicy.IsPe(fileType))
+        {
+            foreach (var hit in PeSpecializedMatcher.Match(overlay, state, options.Limits, cancellationToken))
+                results.Add(hit.Offset is null ? hit : hit with { Offset = hit.Offset.Value + overlayOffset });
+        }
+
+        foreach (var contentScanner in options.ContentScanners)
+        {
+            foreach (var hit in contentScanner.Scan(overlay, path, cancellationToken))
+                results.Add(hit.Offset is null ? hit : hit with { Offset = hit.Offset.Value + overlayOffset });
+        }
+
+        if (ScanTypePolicy.IsArchiveContainer(fileType))
+            results.AddRange(ArchiveScanner.Scan(overlay, path, state, options, parentTypes, 1, cancellationToken));
+
+        return results;
     }
 
     internal static ScanResult ScanBuffer(byte[] buffer, int length, CompiledState state, ScanOptions options, string path, CancellationToken cancellationToken)
@@ -519,42 +574,7 @@ public sealed class ScannerEngine
     {
         if (!PeSpecializedMatcher.TryGetOverlay(data, out var overlay, out var overlayOffset))
             return [];
-        if (overlay.Length == 0 || overlay.Length > options.Limits.MaxEmbeddedStreamSize)
-            return [];
-        if (state.Compiled.MatchesFalsePositive(overlay))
-            return [];
-
-        var parentTypes = new[] { "PE" };
-        var path = $"overlay@{overlayOffset}";
-        var fileType = DetectType(overlay, path, state.Database.SpecialDatabases.FileTypes);
-        var results = new List<Detection>();
-
-        foreach (var hit in state.Compiled.Match(overlay, path, includeNdb: false))
-            results.Add(hit.Offset is null ? hit : hit with { Offset = hit.Offset.Value + overlayOffset });
-
-        var ndb = state.Database.Signatures.OfType<NdbSignature>().ToArray();
-        foreach (var hit in EvaluateNdb(ndb, overlay, options.Limits, fileType, cancellationToken))
-            results.Add(hit.Offset is null ? hit : hit with { Offset = hit.Offset.Value + overlayOffset });
-
-        foreach (var hit in EvaluateLogical(state.Database.Signatures.OfType<LogicalSignature>(), ndb, overlay, options.Limits, fileType, state.Database.IconDatabase, parentTypes, cancellationToken, scanState: state, scanOptions: options))
-            results.Add(hit.Offset is null ? hit : hit with { Offset = hit.Offset.Value + overlayOffset });
-
-        if (ScanTypePolicy.IsPe(fileType))
-        {
-            foreach (var hit in PeSpecializedMatcher.Match(overlay, state, options.Limits, cancellationToken))
-                results.Add(hit.Offset is null ? hit : hit with { Offset = hit.Offset.Value + overlayOffset });
-        }
-
-        foreach (var contentScanner in options.ContentScanners)
-        {
-            foreach (var hit in contentScanner.Scan(overlay, path, cancellationToken))
-                results.Add(hit.Offset is null ? hit : hit with { Offset = hit.Offset.Value + overlayOffset });
-        }
-
-        if (ScanTypePolicy.IsArchiveContainer(fileType))
-            results.AddRange(ArchiveScanner.Scan(overlay, path, state, options, parentTypes, 1, cancellationToken));
-
-        return results;
+        return ScanPeOverlayData(overlay, overlayOffset, state, options, cancellationToken);
     }
 
     private static IReadOnlyList<Detection> ScanMachOFatSlices(
@@ -740,12 +760,23 @@ public sealed class ScannerEngine
                 continue;
 
             var matches = Enumerable.Range(0, maxIndex + 1).Select(static i => new SubsigMatches(i)).ToArray();
+            var isPureAnd = IsPureAndExpression(signature.Expression);
+            var andSatisfied = true;
 
             foreach (var (index, sub) in indexMap)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                matches[index].Positions.AddRange(FindContentMatches(sub, matchData, context, limits.MaxPatternMatchesPerSignature, macroPositions));
+                var hits = FindContentMatches(sub, matchData, context, limits.MaxPatternMatchesPerSignature, macroPositions);
+                matches[index].Positions.AddRange(hits);
+                if (isPureAnd && hits.Count == 0)
+                {
+                    andSatisfied = false;
+                    break;
+                }
             }
+
+            if (isPureAnd && !andSatisfied)
+                continue;
 
             if (signature.MacroSubSignatures is not null)
             {
@@ -880,6 +911,18 @@ public sealed class ScannerEngine
         return results;
     }
 
+    private static bool IsPureAndExpression(string expr)
+    {
+        if (string.IsNullOrWhiteSpace(expr)) return false;
+        // Pure AND consists solely of digits and '&' characters (e.g. "0&1&2&3&4")
+        foreach (var c in expr)
+        {
+            if (c != '&' && !char.IsAsciiDigit(c))
+                return false;
+        }
+        return expr.Contains('&');
+    }
+
     private static IReadOnlyList<Detection> RescanAsHandlerType(
         ReadOnlySpan<byte> data,
         CompiledState state,
@@ -986,13 +1029,40 @@ public sealed class ScannerEngine
             if (start >= data.Length)
                 continue;
             var end = Math.Clamp(range.EndInclusive, start, data.Length - 1);
+            var maxBound = Math.Min(range.MaxBound, data.Length);
             foreach (var pattern in patterns)
             {
-                var last = pattern.MaxLength == int.MaxValue ? end : Math.Min(end, data.Length - Math.Max(1, pattern.MinLength));
+                var patternMinLen = Math.Max(1, pattern.MinLength);
+                var last = pattern.MaxLength == int.MaxValue ? end : Math.Min(end, data.Length - patternMinLen);
+
+                // Hardware-accelerated SIMD / AVX2 fast path for fixed-byte patterns without full-word constraint
+                if (pattern.IsFixed && !options.IgnoreCase && !options.FullWord)
+                {
+                    var targetBytes = pattern.ToFixedBytes().AsSpan();
+                    if (targetBytes.IsEmpty) continue;
+                    var searchSlice = data.Slice(start, Math.Min(data.Length - start, (last - start) + targetBytes.Length));
+                    var offset = 0;
+                    while (offset <= searchSlice.Length - targetBytes.Length)
+                    {
+                        var found = searchSlice[offset..].IndexOf(targetBytes);
+                        if (found < 0) break;
+                        var absPos = start + offset + found;
+                        if (absPos > last) break;
+                        if ((long)absPos + targetBytes.Length <= maxBound)
+                        {
+                            results.Add(absPos);
+                            if (results.Count >= maxMatches) return results;
+                        }
+                        offset += found + 1;
+                    }
+                    continue;
+                }
+
+                // General fallback path for wildcards / classes / alternates / word-boundaries
                 for (var pos = start; pos <= last && pos < data.Length; pos++)
                 {
                     if (!pattern.Matches(data, pos, out var consumed, options)) continue;
-                    if (consumed <= 0 || (long)pos + consumed > (long)end + 1) continue;
+                    if (consumed <= 0 || (long)pos + consumed > maxBound) continue;
                     results.Add(pos);
                     if (results.Count >= maxMatches) return results;
                 }
@@ -1182,7 +1252,8 @@ public sealed class ScannerEngine
             var end = Math.Clamp(range.EndInclusive, start, data.Length - 1);
             // A single-point offset normally anchors the PCRE at that point.
             // The A flag forces anchoring even for wildcard/shifted offsets.
-            var anchored = signature.Flags.Contains('A') || (!rolling && !hasMaxShift && range.Start == range.EndInclusive);
+            var anchored = signature.Flags.Contains('A') || (!global && !rolling && !hasMaxShift && range.Start == range.EndInclusive);
+            var scanLimit = ((global || rolling) && !encompass) ? data.Length : end;
             try
             {
                 var match = regex.Match(input, start);
@@ -1191,9 +1262,9 @@ public sealed class ScannerEngine
                     var matchStart = match.Index;
                     var matchEndExclusive = match.Index + match.Length;
                     var matchEndInclusive = match.Length == 0 ? match.Index : matchEndExclusive - 1;
-                    var allowed = matchStart >= start && matchStart <= end &&
+                    var allowed = matchStart >= start && (global && !encompass || matchStart <= scanLimit) &&
                                   (!anchored || matchStart == start) &&
-                                  (!encompass || matchEndInclusive <= end);
+                                  (!encompass || matchEndExclusive <= range.EndInclusive);
                     if (allowed)
                     {
                         result.Add(matchStart);
@@ -1203,7 +1274,7 @@ public sealed class ScannerEngine
                     if (anchored)
                         break;
                     var next = match.Index + Math.Max(match.Length, 1);
-                    if (next > end || next > input.Length)
+                    if (next > scanLimit || next > input.Length)
                         break;
                     match = regex.Match(input, next);
                 }
@@ -1422,7 +1493,7 @@ public sealed class ScannerEngine
         if (data.Length >= 2 && data[0] == 0x1f && data[1] == 0x8b) return "GZ";
         if (data.Length >= 3 && data[..3].SequenceEqual("BZh"u8)) return "BZ";
         if (data.Length >= 6 && data[..4].SequenceEqual("EGGA"u8) && data[4] == 0x00 && data[5] == 0x01) return "EGG";
-        if (data.Length >= 4 && data[..4].SequenceEqual("ALZ\\x01"u8)) return "ALZ";
+        if (data.Length >= 4 && data[..4].SequenceEqual("ALZ\x01"u8)) return "ALZ";
         if (data.Length >= 16 && ArchiveScanner.IsSymbianSisHeader(data)) return "SIS";
         if (data.Length >= 10 &&
             BinaryPrimitives.ReadUInt32LittleEndian(data[..4]) == 0x44445A53 &&

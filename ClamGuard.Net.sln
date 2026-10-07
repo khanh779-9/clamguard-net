@@ -22,6 +22,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ClamGuard.Bytecode", "src\C
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ClamGuard.Production", "src\ClamGuard.Production\ClamGuard.Production.csproj", "{AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ClamGuard.Antivirus", "src\ClamGuard.Antivirus\ClamGuard.Antivirus.csproj", "{77FC7BED-4C05-4027-B66A-6A597F4F8798}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -68,6 +70,10 @@ Global
 		{AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA}.Release|Any CPU.Build.0 = Release|Any CPU
+		{77FC7BED-4C05-4027-B66A-6A597F4F8798}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{77FC7BED-4C05-4027-B66A-6A597F4F8798}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{77FC7BED-4C05-4027-B66A-6A597F4F8798}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{77FC7BED-4C05-4027-B66A-6A597F4F8798}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

@@ -175,15 +175,15 @@ public sealed class CompiledSignatureSet
         if (_singleFixedMatcher is not null && _singleFixedEntry is not null)
             MatchSingleFixed(_singleFixedMatcher, _singleFixedEntry, data, hits);
         else
-            MatchAho(data, databaseLabel, hits, 0, data.Length);
+            MatchAho(data, databaseLabel, hits, 0, data.Length, collectAllMatches);
         if (!collectAllMatches && hits.Count != 0)
-            return hits.Values.ToArray();
+            return hits.Values.Take(1).ToArray();
 
         foreach (var content in _content.Where(x => !x.Pattern.IsFixed))
         {
             MatchFlexible(content, data, hits, 0);
             if (!collectAllMatches && hits.Count != 0)
-                return hits.Values.ToArray();
+                return hits.Values.Take(1).ToArray();
         }
 
         if (includeNdb)
@@ -193,7 +193,7 @@ public sealed class CompiledSignatureSet
                 var content = new ContentSignature(ndb.Name, SignatureType.Ndb, ndb.SourceFile, ndb.Pattern, ndb.OffsetExpression);
                 MatchFlexible(content, data, hits, 0, data.Length);
                 if (!collectAllMatches && hits.Count != 0)
-                    return hits.Values.ToArray();
+                    return hits.Values.Take(1).ToArray();
             }
         }
 
@@ -213,13 +213,13 @@ public sealed class CompiledSignatureSet
 
             MatchHashBucket(exactBucket, digest, hits);
             if (!collectAllMatches && hits.Count != 0)
-                return hits.Values.ToArray();
+                return hits.Values.Take(1).ToArray();
             MatchHashBucket(wildcardBucket, digest, hits);
             if (!collectAllMatches && hits.Count != 0)
-                return hits.Values.ToArray();
+                return hits.Values.Take(1).ToArray();
         }
 
-        return hits.Values.ToArray();
+        return collectAllMatches ? hits.Values.ToArray() : hits.Values.Take(1).ToArray();
     }
 
     public async Task<(IReadOnlyList<Detection> Detections, bool Trusted, long BytesRead)> MatchStreamAsync(
@@ -480,7 +480,7 @@ public sealed class CompiledSignatureSet
         }
     }
 
-    private void MatchAho(ReadOnlySpan<byte> data, string databaseLabel, Dictionary<string, Detection> hits, long baseOffset, long totalLength)
+    private void MatchAho(ReadOnlySpan<byte> data, string databaseLabel, Dictionary<string, Detection> hits, long baseOffset, long totalLength, bool collectAllMatches = true)
     {
         var state = 0;
         var matches = new List<(int Id, long EndOffset)>();
@@ -494,7 +494,8 @@ public sealed class CompiledSignatureSet
             if (relative < 0 || relative > int.MaxValue || relative >= data.Length) continue;
             if (!item.Pattern.Matches(data, (int)relative, out var consumed)) continue;
             if ((long)relative + consumed > data.Length) continue;
-            hits.TryAdd(item.Name, new Detection(item.Name, item.Type, start, item.SourceFile, "Content pattern matched."));
+            if (hits.TryAdd(item.Name, new Detection(item.Name, item.Type, start, item.SourceFile, "Content pattern matched.")) && !collectAllMatches)
+                return;
         }
     }
 

@@ -1,0 +1,39 @@
+<UserControl x:Class="ClamGuard.Antivirus.Views.QuarantineView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:loc="clr-namespace:ClamGuard.Antivirus.Localization"
+             UseLayoutRounding="True" SnapsToDevicePixels="True">
+    <Grid>
+        <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="12" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+        <Grid>
+            <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+            <StackPanel Margin="0,0,16,0"><TextBlock Text="{loc:Loc quarantine.title}" Style="{DynamicResource Style.SectionLabel}" /><TextBlock Text="{loc:Loc quarantine.empty}" Margin="0,4,0,0" Style="{DynamicResource Style.CardTitle}" /></StackPanel>
+            <WrapPanel Grid.Column="1" HorizontalAlignment="Right">
+                <Button Command="{Binding RestoreSelectedQuarantineCommand}" Style="{DynamicResource Style.ButtonSecondary}" Height="32" Padding="11,5" Margin="0,0,8,0"><TextBlock Text="{loc:Loc quarantine.restore}" /></Button>
+                <Button Command="{Binding DeleteSelectedQuarantineCommand}" Style="{DynamicResource Style.ButtonSecondary}" Height="32" Padding="11,5" Margin="0,0,8,0"><TextBlock Text="{loc:Loc quarantine.delete}" /></Button>
+                <Button Command="{Binding RefreshQuarantineCommand}" Style="{DynamicResource Style.ButtonSecondary}" Height="32" Padding="11,5"><TextBlock Text="{loc:Loc system.refresh}" /></Button>
+            </WrapPanel>
+        </Grid>
+
+        <Border Grid.Row="2" Style="{DynamicResource Style.Card}" Padding="0" ClipToBounds="True">
+            <Grid>
+                <DataGrid ItemsSource="{Binding QuarantineItems}" SelectedItem="{Binding SelectedQuarantineItem, Mode=TwoWay}" Style="{DynamicResource Style.DataTable}">
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Width="*" Binding="{Binding OriginalPath}" ElementStyle="{StaticResource Style.GridColumnText}"><DataGridTextColumn.HeaderTemplate><DataTemplate><TextBlock Text="{loc:Loc quarantine.name}" /></DataTemplate></DataGridTextColumn.HeaderTemplate></DataGridTextColumn>
+                        <DataGridTextColumn Width="190" Binding="{Binding Detection}" ElementStyle="{StaticResource Style.GridColumnText}"><DataGridTextColumn.HeaderTemplate><DataTemplate><TextBlock Text="{loc:Loc quarantine.detection}" /></DataTemplate></DataGridTextColumn.HeaderTemplate></DataGridTextColumn>
+                        <DataGridTextColumn Width="145" Binding="{Binding QuarantinedAt, StringFormat='yyyy-MM-dd HH:mm'}" ElementStyle="{StaticResource Style.GridColumnText}"><DataGridTextColumn.HeaderTemplate><DataTemplate><TextBlock Text="{loc:Loc quarantine.time}" /></DataTemplate></DataGridTextColumn.HeaderTemplate></DataGridTextColumn>
+                        <DataGridTextColumn Width="100" Binding="{Binding SizeBytes, StringFormat={}{0:N0}}" ElementStyle="{StaticResource Style.GridColumnText}"><DataGridTextColumn.HeaderTemplate><DataTemplate><TextBlock Text="{loc:Loc quarantine.size}" /></DataTemplate></DataGridTextColumn.HeaderTemplate></DataGridTextColumn>
+                    </DataGrid.Columns>
+                </DataGrid>
+
+                <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" MaxWidth="470" IsHitTestVisible="False">
+                    <StackPanel.Style><Style TargetType="StackPanel"><Setter Property="Visibility" Value="Collapsed" /><Style.Triggers><DataTrigger Binding="{Binding QuarantineItems.Count}" Value="0"><Setter Property="Visibility" Value="Visible" /></DataTrigger></Style.Triggers></Style></StackPanel.Style>
+                    <Border Width="64" Height="64" Background="{DynamicResource Brush.DangerSoft}" HorizontalAlignment="Center"><Path Width="29" Height="29" HorizontalAlignment="Center" VerticalAlignment="Center" Stroke="{DynamicResource Brush.Danger}" StrokeThickness="1.5" Data="{DynamicResource Icon.Quarantine}" Stretch="Uniform" /></Border>
+                    <TextBlock Text="{loc:Loc quarantine.empty}" Margin="0,15,0,0" FontSize="18" FontWeight="SemiBold" Foreground="{DynamicResource Brush.TextPrimary}" HorizontalAlignment="Center" />
+                    <TextBlock Text="{loc:Loc quarantine.empty_desc}" Margin="0,7,0,0" FontSize="11" TextWrapping="Wrap" TextAlignment="Center" Foreground="{DynamicResource Brush.TextMuted}" />
+                    <Button Command="{Binding NavigateHistoryCommand}" Margin="0,18,0,0" Style="{DynamicResource Style.ButtonSecondary}" HorizontalAlignment="Center"><TextBlock Text="{loc:Loc quarantine.view_history}" /></Button>
+                </StackPanel>
+            </Grid>
+        </Border>
+    </Grid>
+</UserControl>

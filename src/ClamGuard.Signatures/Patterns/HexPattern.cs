@@ -218,16 +218,10 @@ public sealed class HexPattern
 
             case CharacterClassKind.LineBoundary:
                 if (position == 0 || position == data.Length) return true;
-                if (position < data.Length && data[position] == (byte)'\r')
-                {
-                    consumed = position + 1 < data.Length && data[position + 1] == (byte)'\n' ? 2 : 1;
+                if (position > 0 && (data[position - 1] == (byte)'\n' || data[position - 1] == (byte)'\r'))
                     return true;
-                }
-                if (position < data.Length && data[position] == (byte)'\n')
-                {
-                    consumed = 1;
+                if (position < data.Length && (data[position] == (byte)'\r' || data[position] == (byte)'\n'))
                     return true;
-                }
                 return false;
 
             default:

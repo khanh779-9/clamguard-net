@@ -86,7 +86,10 @@ public sealed class ProductionScanHost : IDisposable, IAsyncDisposable
 
             NotifyStarted(fullPath);
             using var requestToken = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _shutdown.Token);
-            requestToken.CancelAfter(_options.QueueWaitTimeout);
+            if (_options.QueueWaitTimeout != Timeout.InfiniteTimeSpan)
+            {
+                requestToken.CancelAfter(_options.QueueWaitTimeout);
+            }
             try
             {
                 await _admission.WaitAsync(requestToken.Token).ConfigureAwait(false);
@@ -139,7 +142,10 @@ public sealed class ProductionScanHost : IDisposable, IAsyncDisposable
                 try
                 {
                     using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _shutdown.Token);
-                    timeout.CancelAfter(_options.ScanTimeout);
+                    if (_options.ScanTimeout != Timeout.InfiniteTimeSpan)
+                    {
+                        timeout.CancelAfter(_options.ScanTimeout);
+                    }
                     ScanResult result;
                     try
                     {

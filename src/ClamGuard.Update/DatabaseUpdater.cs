@@ -24,7 +24,9 @@ public sealed class DatabaseUpdater
         _options = options ?? new UpdateOptions();
         _http = httpClient ?? new HttpClient();
         _http.Timeout = _options.Timeout;
-        _http.DefaultRequestHeaders.UserAgent.ParseAdd("ClamGuard.NET/0.2.0");
+        // Cisco Talos Cloudflare CDN strictly requires User-Agent in CVDUPDATE/<ver> (<uuid>) format; others return 403 Forbidden.
+        var clientUuid = Guid.NewGuid().ToString("D");
+        _http.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", $"CVDUPDATE/1.1.1 ({clientUuid})");
     }
 
     public async Task<UpdateResult> UpdateCvdAsync(string databaseDirectory, string databaseName = "daily.cvd", CancellationToken cancellationToken = default)
@@ -45,7 +47,8 @@ public sealed class DatabaseUpdater
         }
 
         var remoteUri = new Uri(_options.BaseUri, databaseName);
-        var temp = Path.Combine(databaseDirectory, $".{databaseName}.{Guid.NewGuid():N}.tmp");
+        var ext = Path.GetExtension(databaseName);
+        var temp = Path.Combine(databaseDirectory, $".{databaseName}.{Guid.NewGuid():N}{ext}");
         string? detachedSignatureTemp = null;
         try
         {

@@ -55,7 +55,11 @@ public static class CvdReader
             ? seconds
             : 0;
 
-        var format = extension.ToLowerInvariant() switch
+        var cleanExt = extension.ToLowerInvariant();
+        if (cleanExt.EndsWith(".tmp", StringComparison.Ordinal))
+            cleanExt = ".cvd";
+
+        var format = cleanExt switch
         {
             ".cld" => DatabaseFormat.Cld,
             ".cud" => DatabaseFormat.Cud,
@@ -121,8 +125,20 @@ public static class CvdReader
         const int maxEntries = 100_000;
         const long maxExtractedBytes = 2L * 1024 * 1024 * 1024;
 
-        while (tar.GetNextEntry() is { } entry)
+        while (true)
         {
+            TarEntry? entry;
+            try
+            {
+                entry = tar.GetNextEntry();
+            }
+            catch (EndOfStreamException)
+            {
+                // ClamAV CVD archives may terminate at end-of-archive without standard trailing zero blocks.
+                break;
+            }
+            if (entry is null) break;
+
             cancellationToken.ThrowIfCancellationRequested();
 
             if (++entryCount > maxEntries)

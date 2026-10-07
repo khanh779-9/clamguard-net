@@ -19,19 +19,25 @@ public sealed class DatabaseManager
         bool failOnInvalidFile = true,
         bool includePua = false,
         IReadOnlyCollection<string>? includePuaCategories = null,
-        IReadOnlyCollection<string>? excludePuaCategories = null)
+        IReadOnlyCollection<string>? excludePuaCategories = null,
+        string? cacheDirectory = null)
     {
         var loaded = new DatabaseLoader
         {
             IncludePua = includePua,
             IncludePuaCategories = includePuaCategories ?? Array.Empty<string>(),
-            ExcludePuaCategories = excludePuaCategories ?? Array.Empty<string>()
+            ExcludePuaCategories = excludePuaCategories ?? Array.Empty<string>(),
+            CacheDirectory = cacheDirectory
         }.LoadDirectory(directory, failOnInvalidFile);
         var compiled = loaded.Database.Compile();
         var generation = Interlocked.Increment(ref _generation);
         loaded.Database.Generation = generation;
         var next = new CompiledState(loaded.Database, compiled, generation);
         Volatile.Write(ref _state, next);
+
+        // Reclaim transient string parsing and intermediate object allocations from the loader
+        GC.Collect(2, GCCollectionMode.Aggressive, blocking: true, compacting: true);
+
         return next;
     }
 }
