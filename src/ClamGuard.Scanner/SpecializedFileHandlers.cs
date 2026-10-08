@@ -6,6 +6,7 @@ using System.Text.RegularExpressions;
 using System.Xml;
 using ClamGuard.Core;
 using ClamGuard.Database;
+using ClamGuard.Database.Storage;
 using ClamGuard.Signatures;
 
 namespace ClamGuard.Scanner;
@@ -28,15 +29,18 @@ internal static class SpecializedFileHandlers
     {
         if (data.IsEmpty) return [];
 
+        // ClamAV scan_layer dispatches document handlers only when the DOCUMENT
+        // dconf flag is enabled for the engine flevel.
+        var dconf = state.Database.DynamicConfiguration;
         return fileType.ToUpperInvariant() switch
         {
-            "HWP3" => ScanHwp3(data, state, options, path, cancellationToken),
-            "HWPOLE2" => ScanHwpoLe2(data, state, options, path, cancellationToken),
-            "HTML" => ScanHtmlVariants(data, state, options, path, cancellationToken),
-            "HTML_UTF16" => ScanHtmlUtf16Variants(data, state, options, path, cancellationToken),
-            "ONENOTE" => ScanOneNoteAttachments(data, state, options, path, cancellationToken),
+            "HWP3" when (dconf.Doc & DynamicConfigFlags.DocumentHwp) != 0 => ScanHwp3(data, state, options, path, cancellationToken),
+            "HWPOLE2" when (dconf.Doc & DynamicConfigFlags.DocumentHwp) != 0 => ScanHwpoLe2(data, state, options, path, cancellationToken),
+            "HTML" when (dconf.Doc & DynamicConfigFlags.DocumentHtml) != 0 => ScanHtmlVariants(data, state, options, path, cancellationToken),
+            "HTML_UTF16" when (dconf.Doc & DynamicConfigFlags.DocumentHtml) != 0 => ScanHtmlUtf16Variants(data, state, options, path, cancellationToken),
+            "ONENOTE" when (dconf.Doc & DynamicConfigFlags.DocumentOneNote) != 0 => ScanOneNoteAttachments(data, state, options, path, cancellationToken),
             "XDP" => ScanXdp(data, state, options, path, cancellationToken),
-            "XML_HWP" => ScanHwpMl(data, state, options, path, cancellationToken),
+            "XML_HWP" when (dconf.Doc & DynamicConfigFlags.DocumentHwp) != 0 => ScanHwpMl(data, state, options, path, cancellationToken),
             _ => []
         };
     }
@@ -51,10 +55,11 @@ internal static class SpecializedFileHandlers
     {
         if (data.IsEmpty) return [];
 
+        var dconf = state.Database.DynamicConfiguration;
         return fileType.ToUpperInvariant() switch
         {
-            "HTML" => ScanHtmlVariants(data, state, options, path, cancellationToken),
-            "HTML_UTF16" => ScanHtmlUtf16Variants(data, state, options, path, cancellationToken),
+            "HTML" when (dconf.Doc & DynamicConfigFlags.DocumentHtml) != 0 => ScanHtmlVariants(data, state, options, path, cancellationToken),
+            "HTML_UTF16" when (dconf.Doc & DynamicConfigFlags.DocumentHtml) != 0 => ScanHtmlUtf16Variants(data, state, options, path, cancellationToken),
             _ => []
         };
     }

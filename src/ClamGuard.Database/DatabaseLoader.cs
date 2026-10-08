@@ -228,6 +228,9 @@ public sealed class DatabaseLoader
         }
 
         db.Databases = infos;
+        // cli_dconf_load(): resolve the per-module dconf masks for the engine
+        // flevel once after every database file has been loaded.
+        db.DynamicConfiguration = DynamicConfiguration.Resolve(db.SpecialDatabases.DynamicConfig, EngineFunctionalityLevel);
         return new DatabaseLoadResult
         {
             Database = db,

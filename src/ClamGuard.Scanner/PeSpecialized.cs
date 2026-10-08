@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using ClamGuard.Core;
 using ClamGuard.Database;
+using ClamGuard.Database.Storage;
 using ClamGuard.Signatures;
 
 namespace ClamGuard.Scanner;
@@ -132,19 +133,22 @@ internal static class PeSpecializedMatcher
     {
         if (!TryParse(data, out var pe)) return [];
 
+        // ClamAV pe.c gates the section-hash and import-table matchers behind
+        // PE_CONF_MD5SECT / PE_CONF_IMPTBL dconf flags.
+        var peFlags = state.Database.DynamicConfiguration.Pe;
         var results = new List<Detection>();
         var sectionRules = state.Database.Signatures
             .OfType<HashSignature>()
             .Where(static s => IsSectionHash(s.SourceFile))
             .ToArray();
-        if (sectionRules.Length != 0)
+        if (sectionRules.Length != 0 && (peFlags & DynamicConfigFlags.PeMd5Sect) != 0)
             MatchSections(data, pe, sectionRules, limits.MaxPatternMatchesPerSignature, results, cancellationToken);
 
         var importRules = state.Database.Signatures
             .OfType<HashSignature>()
             .Where(static s => IsImportHash(s.SourceFile))
             .ToArray();
-        if (importRules.Length != 0)
+        if (importRules.Length != 0 && (peFlags & DynamicConfigFlags.PeImpTbl) != 0)
             MatchImports(data, pe, importRules, results, cancellationToken);
 
         return results;

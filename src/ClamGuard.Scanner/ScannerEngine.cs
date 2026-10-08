@@ -179,21 +179,27 @@ public sealed class ScannerEngine
             if (needsFullBuffer && info.Length > options.Limits.MaxFullBufferSize)
                 return new ScanResult(ScanVerdict.Error, path, rootType, [], 0, started.Elapsed, state.Database.Databases.FirstOrDefault());
 
-            if (requiresContainerExpansion)
+            // If a whole-file buffer is already needed for subsequent operations, read it once upfront
+            // to avoid reading the file twice from disk.
+            if (needsFullBuffer)
             {
                 fullData = await ReadFullFileAsync(path, info.Length, cancellationToken);
-                var fullRootType = DetectType(fullData, path, state.Database.SpecialDatabases.FileTypes);
+            }
+
+            if (requiresContainerExpansion)
+            {
+                var fullRootType = DetectType(fullData!, path, state.Database.SpecialDatabases.FileTypes);
                 if (!string.Equals(rootType, fullRootType, StringComparison.OrdinalIgnoreCase))
                 {
                     rootType = fullRootType;
                     signatureFileType = rootType.Equals("Unknown", StringComparison.OrdinalIgnoreCase) ? "OTHER" : rootType;
                 }
-                requiresMachOFat = ScanTypePolicy.IsMachO(rootType) && ScanTypePolicy.LooksLikeMachOFat(fullData);
+                requiresMachOFat = ScanTypePolicy.IsMachO(rootType) && ScanTypePolicy.LooksLikeMachOFat(fullData!);
 
-                if (state.Compiled.MatchesFalsePositive(fullData))
+                if (state.Compiled.MatchesFalsePositive(fullData!))
                     return new ScanResult(ScanVerdict.Trusted, path, rootType, [], info.Length, started.Elapsed, state.Database.Databases.FirstOrDefault());
 
-                detections.AddRange(ArchiveScanner.Scan(fullData, path, state, options, [], 0, cancellationToken, rootType));
+                detections.AddRange(ArchiveScanner.Scan(fullData!, path, state, options, [], 0, cancellationToken, rootType));
                 containerPreScanned = true;
                 if (!options.CollectAllMatches && detections.Count != 0)
                     return new ScanResult(ScanVerdict.Malicious, path, rootType, detections.Take(1).ToArray(), info.Length, started.Elapsed, state.Database.Databases.FirstOrDefault());
@@ -201,37 +207,29 @@ public sealed class ScannerEngine
 
             if (requiresSpecializedPreRaw)
             {
-                if (fullData is null)
-                    fullData = await ReadFullFileAsync(path, info.Length, cancellationToken);
-
                 detections.AddRange(SpecializedFileHandlers.ScanPreRaw(
-                    fullData, rootType, state, options, path, cancellationToken));
+                    fullData!, rootType, state, options, path, cancellationToken));
                 if (!options.CollectAllMatches && detections.Count != 0)
                     return new ScanResult(ScanVerdict.Malicious, path, rootType, detections.Take(1).ToArray(), info.Length, started.Elapsed, state.Database.Databases.FirstOrDefault());
             }
 
-            // Keep the non-container raw path stream-based. This mirrors ClamAV's
-            // file-map based scan and avoids materializing large ordinary files just
-            // because the engine has raw signatures loaded.
-            using var mapped = MemoryMappedFile.CreateFromFile(path, FileMode.Open, null, 0, MemoryMappedFileAccess.Read);
-            await using var input = mapped.CreateViewStream(0, info.Length, MemoryMappedFileAccess.Read);
-
             (IReadOnlyList<Detection> Detections, bool Trusted, long BytesRead) rawMatch;
-            if (fullData is not null && requiresContainerExpansion)
+            if (fullData is not null)
             {
-                // The container bytes are already resident. Re-reading them through a
-                // second file stream would only add I/O. The normal raw matcher remains
-                // the same compiled AC/BM/hash engine used by the streaming path.
+                // The bytes are already in RAM. Re-reading them through a second disk stream / memory map
+                // adds 100% duplicate I/O. Use fast in-memory compiled match directly.
                 rawMatch = (state.Compiled.Match(
                     fullData,
                     "compiled-database",
                     includeNdb: false,
                     collectAllMatches: options.CollectAllMatches),
-                    false,
+                    state.Compiled.MatchesFalsePositive(fullData),
                     info.Length);
             }
             else
             {
+                using var mapped = MemoryMappedFile.CreateFromFile(path, FileMode.Open, null, 0, MemoryMappedFileAccess.Read);
+                await using var input = mapped.CreateViewStream(0, info.Length, MemoryMappedFileAccess.Read);
                 rawMatch = await state.Compiled.MatchStreamAsync(
                     input,
                     options.Limits.StreamChunkSize,
@@ -309,11 +307,11 @@ public sealed class ScannerEngine
                 }
                 if (ScanTypePolicy.IsPe(rootType))
                 {
-                    detections.AddRange(ScanPeOverlay(fullData, state, options, cancellationToken));
+                    detections.AddRange(PeOverlayScanner.ScanPeOverlay(fullData, state, options, cancellationToken));
                     if (!options.CollectAllMatches && detections.Count != 0)
                         return new ScanResult(ScanVerdict.Malicious, path, rootType, detections.Take(1).ToArray(), rawMatch.BytesRead, started.Elapsed, state.Database.Databases.FirstOrDefault());
                 }
-                if (requiresMachOFat)
+                if (requiresMachOFat || (ScanTypePolicy.IsMachO(rootType) && ScanTypePolicy.LooksLikeMachOFat(fullData)))
                 {
                     detections.AddRange(ScanMachOFatSlices(fullData, state, options, cancellationToken));
                     if (!options.CollectAllMatches && detections.Count != 0)
@@ -327,7 +325,8 @@ public sealed class ScannerEngine
                 }
             }
 
-            if (fullData is null && ScanTypePolicy.IsPe(rootType) && peSectionRules.Length != 0)
+            if (fullData is null && ScanTypePolicy.IsPe(rootType) && peSectionRules.Length != 0 &&
+                (state.Database.DynamicConfiguration.Pe & DynamicConfigFlags.PeMd5Sect) != 0)
             {
                 var sectionHits = await PeSpecializedMatcher.MatchSectionsFromFileAsync(path, info.Length, peSectionRules, options.Limits.MaxPatternMatchesPerSignature, cancellationToken);
                 detections.AddRange(sectionHits);
@@ -337,7 +336,7 @@ public sealed class ScannerEngine
 
             if (fullData is null && ScanTypePolicy.IsPe(rootType))
             {
-                var overlayHits = await ScanPeOverlayFromFileAsync(path, info.Length, state, options, cancellationToken);
+                var overlayHits = await PeOverlayScanner.ScanPeOverlayFromFileAsync(path, info.Length, state, options, cancellationToken);
                 detections.AddRange(overlayHits);
                 if (!options.CollectAllMatches && detections.Count != 0)
                     return new ScanResult(ScanVerdict.Malicious, path, rootType, detections.Take(1).ToArray(), rawMatch.BytesRead, started.Elapsed, state.Database.Databases.FirstOrDefault());
@@ -444,95 +443,6 @@ public sealed class ScannerEngine
         return effective;
     }
 
-    private static async Task<IReadOnlyList<Detection>> ScanPeOverlayFromFileAsync(
-        string path,
-        long fileLength,
-        CompiledState state,
-        ScanOptions options,
-        CancellationToken cancellationToken)
-    {
-        if (fileLength <= 0) return [];
-
-        var prefixLength = (int)Math.Min(fileLength, 4L * 1024 * 1024);
-        var prefix = new byte[prefixLength];
-        await using (var input = File.OpenRead(path))
-        {
-            var read = 0;
-            while (read < prefix.Length)
-            {
-                var n = await input.ReadAsync(prefix.AsMemory(read), cancellationToken);
-                if (n == 0) break;
-                read += n;
-            }
-            if (read != prefix.Length) prefix = prefix[..read];
-        }
-
-        if (!PeSpecializedMatcher.TryGetOverlayRange(prefix, fileLength, out var overlayOffset, out var overlaySize) ||
-            overlaySize <= 0 || overlaySize > options.Limits.MaxEmbeddedStreamSize ||
-            overlaySize > int.MaxValue)
-            return [];
-
-        var overlay = new byte[(int)overlaySize];
-        await using (var input = File.OpenRead(path))
-        {
-            input.Position = overlayOffset;
-            var read = 0;
-            while (read < overlay.Length)
-            {
-                var n = await input.ReadAsync(overlay.AsMemory(read), cancellationToken);
-                if (n == 0) return [];
-                read += n;
-            }
-        }
-
-        return ScanPeOverlayData(overlay, overlayOffset, state, options, cancellationToken);
-    }
-
-    private static IReadOnlyList<Detection> ScanPeOverlayData(
-        ReadOnlySpan<byte> overlay,
-        long overlayOffset,
-        CompiledState state,
-        ScanOptions options,
-        CancellationToken cancellationToken)
-    {
-        if (overlay.Length == 0 || overlay.Length > options.Limits.MaxEmbeddedStreamSize)
-            return [];
-        if (state.Compiled.MatchesFalsePositive(overlay))
-            return [];
-
-        var parentTypes = new[] { "PE" };
-        var path = $"overlay@{overlayOffset}";
-        var fileType = DetectType(overlay, path, state.Database.SpecialDatabases.FileTypes);
-        var results = new List<Detection>();
-
-        foreach (var hit in state.Compiled.Match(overlay, path, includeNdb: false))
-            results.Add(hit.Offset is null ? hit : hit with { Offset = hit.Offset.Value + overlayOffset });
-
-        var ndb = state.Database.Signatures.OfType<NdbSignature>().ToArray();
-        foreach (var hit in EvaluateNdb(ndb, overlay, options.Limits, fileType, cancellationToken))
-            results.Add(hit.Offset is null ? hit : hit with { Offset = hit.Offset.Value + overlayOffset });
-
-        foreach (var hit in EvaluateLogical(state.Database.Signatures.OfType<LogicalSignature>(), ndb, overlay, options.Limits, fileType, state.Database.IconDatabase, parentTypes, cancellationToken, scanState: state, scanOptions: options))
-            results.Add(hit.Offset is null ? hit : hit with { Offset = hit.Offset.Value + overlayOffset });
-
-        if (ScanTypePolicy.IsPe(fileType))
-        {
-            foreach (var hit in PeSpecializedMatcher.Match(overlay, state, options.Limits, cancellationToken))
-                results.Add(hit.Offset is null ? hit : hit with { Offset = hit.Offset.Value + overlayOffset });
-        }
-
-        foreach (var contentScanner in options.ContentScanners)
-        {
-            foreach (var hit in contentScanner.Scan(overlay, path, cancellationToken))
-                results.Add(hit.Offset is null ? hit : hit with { Offset = hit.Offset.Value + overlayOffset });
-        }
-
-        if (ScanTypePolicy.IsArchiveContainer(fileType))
-            results.AddRange(ArchiveScanner.Scan(overlay, path, state, options, parentTypes, 1, cancellationToken));
-
-        return results;
-    }
-
     internal static ScanResult ScanBuffer(byte[] buffer, int length, CompiledState state, ScanOptions options, string path, CancellationToken cancellationToken)
     {
         var data = buffer.AsSpan(0, length);
@@ -553,7 +463,7 @@ public sealed class ScannerEngine
         foreach (var contentScanner in options.ContentScanners)
             detections.AddRange(contentScanner.Scan(data, path, cancellationToken));
         if (ScanTypePolicy.IsPe(fileType))
-            detections.AddRange(ScanPeOverlay(data.ToArray(), state, options, cancellationToken));
+            detections.AddRange(PeOverlayScanner.ScanPeOverlay(data.ToArray(), state, options, cancellationToken));
         if (ScanTypePolicy.IsMachO(fileType) && ScanTypePolicy.LooksLikeMachOFat(data))
             detections.AddRange(ScanMachOFatSlices(buffer, length, state, options, cancellationToken));
         if (ScanTypePolicy.IsArchiveContainer(fileType))
@@ -564,17 +474,6 @@ public sealed class ScannerEngine
             return new ScanResult(ScanVerdict.Trusted, path, fileType, distinct, length, TimeSpan.Zero, state.Database.Databases.FirstOrDefault());
         var verdict = distinct.Length == 0 ? ScanVerdict.Clean : ScanVerdict.Malicious;
         return new ScanResult(verdict, path, fileType, distinct, length, TimeSpan.Zero, state.Database.Databases.FirstOrDefault());
-    }
-
-    private static IReadOnlyList<Detection> ScanPeOverlay(
-        ReadOnlySpan<byte> data,
-        CompiledState state,
-        ScanOptions options,
-        CancellationToken cancellationToken)
-    {
-        if (!PeSpecializedMatcher.TryGetOverlay(data, out var overlay, out var overlayOffset))
-            return [];
-        return ScanPeOverlayData(overlay, overlayOffset, state, options, cancellationToken);
     }
 
     private static IReadOnlyList<Detection> ScanMachOFatSlices(
@@ -672,7 +571,7 @@ public sealed class ScannerEngine
                 signature.SourceFile,
                 signature.Pattern,
                 signature.OffsetExpression);
-            var matches = FindContentMatches(content, scanData, context, limits.MaxPatternMatchesPerSignature);
+            var matches = LogicalContentMatcher.FindContentMatches(content, scanData, context, limits.MaxPatternMatchesPerSignature);
             if (matches.Count == 0)
                 continue;
 
@@ -701,6 +600,13 @@ public sealed class ScannerEngine
     {
         var results = new List<Detection>();
         var baseContext = LdbRuntime.CreateContext(data, fileType, parentTypes, retyped);
+        // ClamAV gates PCRE signature support behind PCRE_CONF_SUPPORT and the
+        // PE icon check behind PE_CONF_MATCHICON; a missing engine state keeps
+        // both enabled (matching the all-on dconf defaults).
+        var dconf = scanState?.Database.DynamicConfiguration;
+        var pcreSupported = dconf is null || (dconf.Pcre & DynamicConfigFlags.PcreSupport) != 0;
+        var matchIconEnabled = dconf is null || (dconf.Pe & DynamicConfigFlags.PeMatchIcon) != 0;
+        var macroPositions = new Dictionary<int, List<int>>();
         var macroMembers = ndbSignatures
             .Where(static x => x.MacroGroup is not null)
             .GroupBy(x => x.MacroGroup!.Value)
@@ -709,27 +615,31 @@ public sealed class ScannerEngine
         // ClamAV stores the most recent match for each macro group. Pre-compute
         // those positions so LDB content subsignatures using $N$ can resolve
         // the same absolute anchor before the logical expression is evaluated.
-        var macroPositions = new Dictionary<int, List<int>>();
-        foreach (var pair in macroMembers)
+        // Only run this if any active signature actually contains macro subsignatures.
+        var hasAnyMacroSubSignatures = signatures.Any(static s => s.MacroSubSignatures is not null && s.MacroSubSignatures.Count != 0);
+        if (hasAnyMacroSubSignatures && macroMembers.Count != 0)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            var positions = new List<int>();
-            foreach (var member in pair.Value)
+            foreach (var pair in macroMembers)
             {
-                var normalized = NormalizeTargetData(data, fileType, member.Target);
-                ReadOnlySpan<byte> memberData = data;
-                if (normalized is not null) memberData = normalized;
-                var memberContext = normalized is null ? baseContext : LdbRuntime.CreateContext(memberData, fileType, parentTypes, retyped);
-                if (!LdbRuntime.TargetMatchesFileType(member.Target, memberContext))
-                    continue;
-                // In an NDB macro member the $N$ offset is a group marker, not a file offset.
-                var memberMatches = FindContentMatches(
-                    new ContentSignature(member.Name, SignatureType.Ndb, member.SourceFile, member.Pattern, "*"),
-                    memberData, memberContext, limits.MaxPatternMatchesPerSignature);
-                positions.AddRange(memberMatches);
+                cancellationToken.ThrowIfCancellationRequested();
+                var positions = new List<int>();
+                foreach (var member in pair.Value)
+                {
+                    var normalized = NormalizeTargetData(data, fileType, member.Target);
+                    ReadOnlySpan<byte> memberData = data;
+                    if (normalized is not null) memberData = normalized;
+                    var memberContext = normalized is null ? baseContext : LdbRuntime.CreateContext(memberData, fileType, parentTypes, retyped);
+                    if (!LdbRuntime.TargetMatchesFileType(member.Target, memberContext))
+                        continue;
+                    // In an NDB macro member the $N$ offset is a group marker, not a file offset.
+                    var memberMatches = LogicalContentMatcher.FindContentMatches(
+                        new ContentSignature(member.Name, SignatureType.Ndb, member.SourceFile, member.Pattern, "*"),
+                        memberData, memberContext, limits.MaxPatternMatchesPerSignature);
+                    positions.AddRange(memberMatches);
+                }
+                if (positions.Count != 0)
+                    macroPositions[pair.Key] = positions.Distinct().OrderBy(static x => x).ToList();
             }
-            if (positions.Count != 0)
-                macroPositions[pair.Key] = positions.Distinct().OrderBy(static x => x).ToList();
         }
 
         foreach (var signature in signatures)
@@ -762,11 +672,20 @@ public sealed class ScannerEngine
             var matches = Enumerable.Range(0, maxIndex + 1).Select(static i => new SubsigMatches(i)).ToArray();
             var isPureAnd = IsPureAndExpression(signature.Expression);
             var andSatisfied = true;
+            // For pure AND expressions ("0&1&2..."), test fixed & longer patterns first to fail fast.
+            IEnumerable<KeyValuePair<int, ContentSignature>> orderedSubs = indexMap;
+            if (isPureAnd && indexMap.Count > 1)
+            {
+                orderedSubs = indexMap.OrderByDescending(static kv => kv.Value.Pattern.IsFixed)
+                                      .ThenByDescending(static kv => kv.Value.Pattern.MinLength);
+            }
 
-            foreach (var (index, sub) in indexMap)
+            foreach (var kv in orderedSubs)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                var hits = FindContentMatches(sub, matchData, context, limits.MaxPatternMatchesPerSignature, macroPositions);
+                var index = kv.Key;
+                var sub = kv.Value;
+                var hits = LogicalContentMatcher.FindContentMatches(sub, matchData, context, limits.MaxPatternMatchesPerSignature, macroPositions);
                 matches[index].Positions.AddRange(hits);
                 if (isPureAnd && hits.Count == 0)
                 {
@@ -793,7 +712,7 @@ public sealed class ScannerEngine
                     {
                         if (!LdbRuntime.TargetMatchesFileType(member.Target, context))
                             continue;
-                        var memberMatches = FindContentMatches(
+                        var memberMatches = LogicalContentMatcher.FindContentMatches(
                             new ContentSignature(member.Name, SignatureType.Ndb, member.SourceFile, member.Pattern, "*"),
                             matchData, context, limits.MaxPatternMatchesPerSignature, macroPositions);
                         foreach (var memberStart in memberMatches)
@@ -810,17 +729,17 @@ public sealed class ScannerEngine
                 }
             }
 
-            if (signature.RegexSubSignatures is not null)
+            if (signature.RegexSubSignatures is not null && pcreSupported)
             {
                 foreach (var pair in signature.RegexSubSignatures.OrderBy(static x => x.Key))
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     var index = pair.Key;
                     var regexSub = pair.Value;
-                    if (index >= matches.Length || !ExpressionEvaluator.ValidateReferencesBefore(regexSub.Trigger, index) ||
+                    if (index >= matches.Length || !LogicalExpressionEvaluator.ValidateReferencesBefore(regexSub.Trigger, index) ||
                         !TryEvaluateTrigger(regexSub.Trigger, matches, limits.MaxLogicalDepth))
                         continue;
-                    matches[index].Positions.AddRange(FindRegexMatches(regexSub, matchData, context, limits.MaxPatternMatchesPerSignature));
+                    matches[index].Positions.AddRange(RegexContentMatcher.FindRegexMatches(regexSub, matchData, context, limits.MaxPatternMatchesPerSignature));
                 }
             }
 
@@ -864,9 +783,9 @@ public sealed class ScannerEngine
             bool expressionMatched;
             try
             {
-                if (!ExpressionEvaluator.ValidateReferencesBefore(signature.Expression, matches.Length))
+                if (!LogicalExpressionEvaluator.ValidateReferencesBefore(signature.Expression, matches.Length))
                     continue;
-                expressionMatched = ExpressionEvaluator.Evaluate(signature.Expression, matches, limits.MaxLogicalDepth);
+                expressionMatched = LogicalExpressionEvaluator.Evaluate(signature.Expression, matches, limits.MaxLogicalDepth);
             }
             catch (FormatException) { continue; }
             catch (InvalidDataException) { continue; }
@@ -898,6 +817,7 @@ public sealed class ScannerEngine
             }
 
             if ((target?.IconGroup1 is not null || target?.IconGroup2 is not null) &&
+                matchIconEnabled &&
                 !LdbRuntime.HasIconGroup(data, context, target!.IconGroup1, target.IconGroup2, iconDatabase))
                 continue;
 
@@ -979,7 +899,7 @@ public sealed class ScannerEngine
         if (handlerType.Equals("PE", StringComparison.OrdinalIgnoreCase) ||
             handlerType.Equals("MSEXE", StringComparison.OrdinalIgnoreCase))
         {
-            results.AddRange(ScanPeOverlay(data.ToArray(), state, options, cancellationToken));
+            results.AddRange(PeOverlayScanner.ScanPeOverlay(data.ToArray(), state, options, cancellationToken));
         }
 
         if (handlerType.Equals("MACH-O", StringComparison.OrdinalIgnoreCase) ||
@@ -1003,71 +923,6 @@ public sealed class ScannerEngine
                 cancellationToken));
         }
 
-        return results;
-    }
-
-    private static List<int> FindContentMatches(ContentSignature signature, ReadOnlySpan<byte> data, LdbScanContext context, int maxMatches, IReadOnlyDictionary<int, List<int>>? macroPositions = null)
-    {
-        if (maxMatches <= 0 || data.IsEmpty)
-            return [];
-        var patterns = new List<HexPattern>(2);
-        // ClamAV's `w` creates a wide pattern, while `a` requests the ASCII
-        // variant in addition to wide when both are present.
-        if (!signature.MatchOptions.HasFlag(ContentMatchOptions.Wide) || signature.MatchOptions.HasFlag(ContentMatchOptions.Ascii))
-            patterns.Add(signature.Pattern);
-        if (signature.MatchOptions.HasFlag(ContentMatchOptions.Wide))
-            patterns.Add(signature.Pattern.ToWideVariant());
-        if (patterns.Count == 0) patterns.Add(signature.Pattern);
-        var ranges = LdbRuntime.ResolveOffset(signature.OffsetExpression, context, macroPositions: macroPositions);
-        var results = new List<int>();
-        var options = new PatternMatchOptions(signature.MatchOptions.HasFlag(ContentMatchOptions.IgnoreCase), signature.MatchOptions.HasFlag(ContentMatchOptions.FullWord));
-        foreach (var range in ranges)
-        {
-            var start = Math.Clamp(range.Start, 0, data.Length);
-            // A zero-length EOF/EOF-n anchor at file.Length is a valid calculated
-            // offset, but it cannot contain a content pattern.
-            if (start >= data.Length)
-                continue;
-            var end = Math.Clamp(range.EndInclusive, start, data.Length - 1);
-            var maxBound = Math.Min(range.MaxBound, data.Length);
-            foreach (var pattern in patterns)
-            {
-                var patternMinLen = Math.Max(1, pattern.MinLength);
-                var last = pattern.MaxLength == int.MaxValue ? end : Math.Min(end, data.Length - patternMinLen);
-
-                // Hardware-accelerated SIMD / AVX2 fast path for fixed-byte patterns without full-word constraint
-                if (pattern.IsFixed && !options.IgnoreCase && !options.FullWord)
-                {
-                    var targetBytes = pattern.ToFixedBytes().AsSpan();
-                    if (targetBytes.IsEmpty) continue;
-                    var searchSlice = data.Slice(start, Math.Min(data.Length - start, (last - start) + targetBytes.Length));
-                    var offset = 0;
-                    while (offset <= searchSlice.Length - targetBytes.Length)
-                    {
-                        var found = searchSlice[offset..].IndexOf(targetBytes);
-                        if (found < 0) break;
-                        var absPos = start + offset + found;
-                        if (absPos > last) break;
-                        if ((long)absPos + targetBytes.Length <= maxBound)
-                        {
-                            results.Add(absPos);
-                            if (results.Count >= maxMatches) return results;
-                        }
-                        offset += found + 1;
-                    }
-                    continue;
-                }
-
-                // General fallback path for wildcards / classes / alternates / word-boundaries
-                for (var pos = start; pos <= last && pos < data.Length; pos++)
-                {
-                    if (!pattern.Matches(data, pos, out var consumed, options)) continue;
-                    if (consumed <= 0 || (long)pos + consumed > maxBound) continue;
-                    results.Add(pos);
-                    if (results.Count >= maxMatches) return results;
-                }
-            }
-        }
         return results;
     }
 
@@ -1161,7 +1016,7 @@ public sealed class ScannerEngine
     {
         try
         {
-            return ExpressionEvaluator.Evaluate(expression, matches, maxDepth);
+            return LogicalExpressionEvaluator.Evaluate(expression, matches, maxDepth);
         }
         catch (FormatException)
         {
@@ -1171,147 +1026,6 @@ public sealed class ScannerEngine
         {
             return false;
         }
-    }
-
-    private static string MakeUngreedyRegex(string pattern)
-    {
-        var sb = new StringBuilder(pattern.Length + 16);
-        var escaped = false;
-        var inClass = false;
-        for (var i = 0; i < pattern.Length; i++)
-        {
-            var c = pattern[i];
-            if (escaped) { sb.Append(c); escaped = false; continue; }
-            if (c == '\\') { sb.Append(c); escaped = true; continue; }
-            if (c == '[') inClass = true;
-            if (c == ']') inClass = false;
-            if (!inClass && (c == '*' || c == '+'))
-            {
-                sb.Append(c);
-                if (i + 1 >= pattern.Length || pattern[i + 1] != '?') sb.Append('?');
-                continue;
-            }
-            if (!inClass && c == '{')
-            {
-                var close = pattern.IndexOf('}', i + 1);
-                if (close > i)
-                {
-                    sb.Append(pattern, i, close - i + 1);
-                    if (close + 1 >= pattern.Length || pattern[close + 1] != '?') sb.Append('?');
-                    i = close;
-                    continue;
-                }
-            }
-            sb.Append(c);
-        }
-        return sb.ToString();
-    }
-
-    private static List<int> FindRegexMatches(LdbRegexSubSignature signature, ReadOnlySpan<byte> data, LdbScanContext context, int maxMatches)
-    {
-        if (maxMatches <= 0 || data.IsEmpty)
-            return [];
-
-        RegexOptions options = RegexOptions.Compiled | RegexOptions.CultureInvariant;
-        if (signature.Flags.Contains('i')) options |= RegexOptions.IgnoreCase;
-        if (signature.Flags.Contains('s')) options |= RegexOptions.Singleline;
-        if (signature.Flags.Contains('m')) options |= RegexOptions.Multiline;
-        if (signature.Flags.Contains('x')) options |= RegexOptions.IgnorePatternWhitespace;
-
-        Regex regex;
-        try
-        {
-            var regexPattern = signature.Flags.Contains('U') ? MakeUngreedyRegex(signature.Pattern) : signature.Pattern;
-            if (signature.Flags.Contains('E'))
-                regexPattern = MakeDollarEndOnlyRegex(regexPattern);
-            regex = new Regex(regexPattern, options, TimeSpan.FromMilliseconds(250));
-        }
-        catch (ArgumentException)
-        {
-            return [];
-        }
-
-        var input = Encoding.Latin1.GetString(data);
-        var ranges = LdbRuntime.ResolveOffset(signature.OffsetExpression, context);
-        if (ranges.Count == 0)
-            return [];
-
-        var rolling = signature.Flags.Contains('r');
-        // ClamAV's r flag is a rolling search modifier and is ignored when the
-        // offset expression already supplies a maximum shift range.
-        var hasMaxShift = signature.OffsetExpression.Contains(",", StringComparison.Ordinal);
-        var global = signature.Flags.Contains('g');
-        var encompass = signature.Flags.Contains('e') && hasMaxShift;
-        var result = new List<int>();
-
-        foreach (var range in ranges)
-        {
-            var start = Math.Clamp(range.Start, 0, data.Length);
-            if (start >= data.Length)
-                continue;
-            var end = Math.Clamp(range.EndInclusive, start, data.Length - 1);
-            // A single-point offset normally anchors the PCRE at that point.
-            // The A flag forces anchoring even for wildcard/shifted offsets.
-            var anchored = signature.Flags.Contains('A') || (!global && !rolling && !hasMaxShift && range.Start == range.EndInclusive);
-            var scanLimit = ((global || rolling) && !encompass) ? data.Length : end;
-            try
-            {
-                var match = regex.Match(input, start);
-                while (match.Success)
-                {
-                    var matchStart = match.Index;
-                    var matchEndExclusive = match.Index + match.Length;
-                    var matchEndInclusive = match.Length == 0 ? match.Index : matchEndExclusive - 1;
-                    var allowed = matchStart >= start && (global && !encompass || matchStart <= scanLimit) &&
-                                  (!anchored || matchStart == start) &&
-                                  (!encompass || matchEndExclusive <= range.EndInclusive);
-                    if (allowed)
-                    {
-                        result.Add(matchStart);
-                        if (result.Count >= maxMatches || !global)
-                            return result;
-                    }
-                    if (anchored)
-                        break;
-                    var next = match.Index + Math.Max(match.Length, 1);
-                    if (next > scanLimit || next > input.Length)
-                        break;
-                    match = regex.Match(input, next);
-                }
-            }
-            catch (RegexMatchTimeoutException) { }
-        }
-        return result;
-    }
-
-    private static string MakeDollarEndOnlyRegex(string pattern)
-    {
-        var sb = new StringBuilder(pattern.Length + 8);
-        var escaped = false;
-        var inClass = false;
-        for (var i = 0; i < pattern.Length; i++)
-        {
-            var c = pattern[i];
-            if (escaped)
-            {
-                sb.Append(c);
-                escaped = false;
-                continue;
-            }
-            if (c == '\\')
-            {
-                sb.Append(c);
-                escaped = true;
-                continue;
-            }
-            if (c == '[') inClass = true;
-            if (c == ']' && inClass) inClass = false;
-            if (c == '$' && !inClass)
-                sb.Append("\\z");
-            else
-                sb.Append(c);
-        }
-        return sb.ToString();
     }
 
     private static bool TryReadByteCompareValue(
@@ -1670,206 +1384,4 @@ public sealed class ScannerEngine
     }
 
     private static string DetectType(string path) => DetectType(ReadOnlySpan<byte>.Empty, path);
-}
-
-internal static class ExpressionEvaluator
-{
-    private enum TokenKind { Number, And, Or, LParen, RParen, Eq, Gt, Lt, Comma, End }
-    private readonly record struct Token(TokenKind Kind, int Value = 0);
-
-    private readonly record struct EvalValue(bool Result, int Count, HashSet<int> Distinct)
-    {
-        public static EvalValue Empty => new(false, 0, []);
-
-        public EvalValue Merge(EvalValue other, bool result)
-        {
-            // ClamAV only propagates match counts/IDs from a logical block when
-            // the block itself evaluates true. This matters for outer count
-            // modifiers such as `(0&1)>0`: a failed `0&1` contributes zero,
-            // rather than leaking the count from the successful left operand.
-            if (!result)
-                return Empty;
-
-            var distinct = new HashSet<int>(Distinct);
-            distinct.UnionWith(other.Distinct);
-            return new EvalValue(true, Count + other.Count, distinct);
-        }
-    }
-
-    public static bool ValidateReferencesBefore(string expression, int exclusiveUpperBound)
-    {
-        if (exclusiveUpperBound < 0) return false;
-        try
-        {
-            var parser = new Parser(expression, Array.Empty<ScannerEngine.SubsigMatches>(), int.MaxValue, exclusiveUpperBound);
-            _ = parser.ParseOr(0);
-            return parser.Current.Kind == TokenKind.End;
-        }
-        catch (FormatException)
-        {
-            return false;
-        }
-        catch (InvalidDataException)
-        {
-            return false;
-        }
-    }
-
-    public static bool Evaluate(string expression, IReadOnlyList<ScannerEngine.SubsigMatches> matches, int maxDepth)
-    {
-        var parser = new Parser(expression, matches, maxDepth);
-        var value = parser.ParseOr(0);
-        if (parser.Current.Kind != TokenKind.End)
-            throw new FormatException("Unexpected trailing tokens in logical expression.");
-        return value.Result;
-    }
-
-    private sealed class Parser
-    {
-        private readonly List<Token> _tokens;
-        private readonly IReadOnlyList<ScannerEngine.SubsigMatches> _matches;
-        private readonly int _maxDepth;
-        private readonly int _referenceUpperBound;
-        private int _index;
-
-        public Token Current => _tokens[_index];
-
-        public Parser(string expression, IReadOnlyList<ScannerEngine.SubsigMatches> matches, int maxDepth, int referenceUpperBound = -1)
-        {
-            _tokens = Tokenize(expression);
-            _matches = matches;
-            _maxDepth = maxDepth;
-            _referenceUpperBound = referenceUpperBound;
-        }
-
-        // ClamAV 1.5.4 does not use conventional boolean precedence here.
-        // cli_ac_chklsig() splits on the first top-level '&' or '|', then
-        // recursively evaluates the remainder. This makes expressions such as
-        // 0&1|2 parse as 0&(1|2), so we intentionally mirror that behavior.
-        public EvalValue ParseOr(int depth)
-        {
-            Guard(depth);
-            var left = ParsePrimary(depth + 1);
-            if (Current.Kind is not (TokenKind.And or TokenKind.Or))
-                return left;
-
-            var op = Current.Kind;
-            _index++;
-            var right = ParseOr(depth + 1);
-            var result = op == TokenKind.And
-                ? left.Result && right.Result
-                : left.Result || right.Result;
-            return left.Merge(right, result);
-        }
-
-        private EvalValue ParsePrimary(int depth)
-        {
-            Guard(depth);
-            EvalValue value;
-            if (Current.Kind == TokenKind.LParen)
-            {
-                _index++;
-                value = ParseOr(depth + 1);
-                Expect(TokenKind.RParen);
-                _index++;
-            }
-            else
-            {
-                Expect(TokenKind.Number);
-                var index = Current.Value;
-                _index++;
-                if (_referenceUpperBound >= 0 && index >= _referenceUpperBound)
-                    throw new FormatException("Logical expression references a future or unavailable subsignature.");
-                if ((uint)index >= (uint)_matches.Count)
-                    value = EvalValue.Empty;
-                else
-                {
-                    var sub = _matches[index];
-                    var distinct = sub.Count == 0 ? [] : new HashSet<int> { index };
-                    value = new EvalValue(sub.Count > 0, sub.Count, distinct);
-                }
-            }
-            return ParseComparison(value);
-        }
-
-        private EvalValue ParseComparison(EvalValue value)
-        {
-            if (Current.Kind is not (TokenKind.Eq or TokenKind.Gt or TokenKind.Lt))
-                return value;
-
-            var kind = Current.Kind;
-            _index++;
-            Expect(TokenKind.Number);
-            var first = Current.Value;
-            _index++;
-            int? distinctMinimum = null;
-            if (Current.Kind == TokenKind.Comma)
-            {
-                _index++;
-                Expect(TokenKind.Number);
-                distinctMinimum = Current.Value;
-                _index++;
-            }
-
-            if (first < 0 || distinctMinimum is < 0)
-                throw new FormatException("Logical comparison values must be non-negative.");
-
-            var result = kind switch
-            {
-                TokenKind.Eq => value.Count == first && (!distinctMinimum.HasValue || value.Distinct.Count >= distinctMinimum.Value),
-                TokenKind.Gt => value.Count > first && (!distinctMinimum.HasValue || value.Distinct.Count >= distinctMinimum.Value),
-                TokenKind.Lt => value.Count < first && (!distinctMinimum.HasValue || value.Distinct.Count >= distinctMinimum.Value),
-                _ => false
-            };
-
-            // A failed comparison is a failed logical block in ClamAV and must
-            // not carry its pre-comparison count/IDs into an outer modifier.
-            return result ? value with { Result = true } : EvalValue.Empty;
-        }
-
-        private void Expect(TokenKind kind)
-        {
-            if (Current.Kind != kind)
-                throw new FormatException($"Unexpected logical token: expected {kind}, got {Current.Kind}.");
-        }
-
-        private void Guard(int depth)
-        {
-            if (depth > _maxDepth)
-                throw new InvalidDataException("Logical expression nesting limit exceeded.");
-        }
-
-        private static List<Token> Tokenize(string expression)
-        {
-            var result = new List<Token>();
-            for (var i = 0; i < expression.Length; i++)
-            {
-                var c = expression[i];
-                if (char.IsWhiteSpace(c)) continue;
-                if (char.IsDigit(c))
-                {
-                    var start = i;
-                    while (i + 1 < expression.Length && char.IsDigit(expression[i + 1])) i++;
-                    if (!int.TryParse(expression[start..(i + 1)], out var number))
-                        throw new FormatException("Invalid logical integer.");
-                    result.Add(new Token(TokenKind.Number, number));
-                    continue;
-                }
-                result.Add(c switch
-                {
-                    '&' => new Token(TokenKind.And),
-                    '|' => new Token(TokenKind.Or),
-                    '(' => new Token(TokenKind.LParen),
-                    ')' => new Token(TokenKind.RParen),
-                    '=' => new Token(TokenKind.Eq),
-                    '>' => new Token(TokenKind.Gt),
-                    '<' => new Token(TokenKind.Lt),
-                    ',' => new Token(TokenKind.Comma),
-                    _ => throw new FormatException($"Unsupported logical expression character: {c}")
-                });
-            }
-            result.Add(new Token(TokenKind.End));
-            return result;
-        }
-    }
 }

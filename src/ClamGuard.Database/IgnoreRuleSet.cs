@@ -18,15 +18,18 @@ internal sealed class IgnoreRuleSet
     public int Count => _rules.Values.Sum(static x => x.Count);
 
     public void LoadFile(string path)
+        => LoadLines(File.ReadLines(path), path);
+
+    public void LoadLines(IEnumerable<string> lines, string virtualPath)
     {
-        foreach (var raw in File.ReadLines(path))
+        foreach (var raw in lines)
         {
             if (raw.Length > 0 && raw[0] == '#')
                 continue;
 
             var parts = raw.Split(':');
             if (parts.Length > 3)
-                throw new FormatException($"Invalid IGN rule in {path}: {raw}");
+                throw new FormatException($"Invalid IGN rule in {virtualPath}: {raw}");
 
             string signame;
             byte[]? entryMd5 = null;
@@ -38,7 +41,7 @@ internal sealed class IgnoreRuleSet
             {
                 signame = parts[0];
                 if (parts[1].Length != 32 || !TryDecodeHex(parts[1], out entryMd5))
-                    throw new FormatException($"Malformed IGN MD5 in {path}: {raw}");
+                    throw new FormatException($"Malformed IGN MD5 in {virtualPath}: {raw}");
             }
             else
             {
@@ -47,7 +50,7 @@ internal sealed class IgnoreRuleSet
             }
 
             if (signame.Length == 0)
-                throw new FormatException($"No signature name provided in {path}");
+                throw new FormatException($"No signature name provided in {virtualPath}");
 
             signame = NormalizeIgnoreName(signame);
             if (!_rules.TryGetValue(signame, out var rules))

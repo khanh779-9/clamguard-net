@@ -12,6 +12,7 @@ public sealed class SignatureDatabase
     public IReadOnlyList<DatabaseInfo> Databases { get; internal set; } = [];
     public IconDatabase? IconDatabase { get; internal set; }
     public SpecialDatabaseStore SpecialDatabases { get; } = new();
+    public DynamicConfiguration DynamicConfiguration { get; internal set; } = new();
     public bool HasSelfProtectionSignatures => _signatures.OfType<NdbSignature>().Any(static x => x.IsSelfProtection);
 
     public void Add(Signature signature) => _signatures.Add(signature);
