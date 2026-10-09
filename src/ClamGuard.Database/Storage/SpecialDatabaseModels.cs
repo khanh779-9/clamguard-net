@@ -19,14 +19,12 @@ public sealed record DynamicConfigEntry(
     uint Value,
     int? MinimumFunctionalityLevel,
     int? MaximumFunctionalityLevel,
-    string SourceFile,
-    string SourceEntry);
+    string SourceFile);
 
 public sealed record PhishingDatabaseRule(
     string Pattern,
     bool AllowList,
-    string SourceFile,
-    string SourceEntry);
+    string SourceFile);
 
 public sealed record PasswordDatabaseEntry(
     string Name,
@@ -34,8 +32,7 @@ public sealed record PasswordDatabaseEntry(
     string Container,
     int StorageType,
     byte[] Password,
-    string SourceFile,
-    string SourceEntry);
+    string SourceFile);
 
 public sealed record CertificateDatabaseRule(
     string Name,
@@ -49,8 +46,7 @@ public sealed record CertificateDatabaseRule(
     long? NotBefore,
     int? MinimumFunctionalityLevel,
     int? MaximumFunctionalityLevel,
-    string SourceFile,
-    string SourceEntry);
+    string SourceFile);
 
 public sealed record CatalogDatabaseInfo(
     string Name,

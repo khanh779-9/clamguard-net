@@ -2,6 +2,52 @@ internal static partial class Program
 {
     private static async Task CompiledMatcherTestsAsync()
     {
+        var fixedPattern = HexPatternParser.Parse("4142");
+        Assert(fixedPattern.IsFixed && fixedPattern.ToFixedBytes().SequenceEqual(new byte[] { 0x41, 0x42 }),
+            "exact-byte patterns retain compact byte storage");
+        Assert(fixedPattern.Matches(" AB!"u8, 1, out var fixedConsumed,
+                new PatternMatchOptions(IgnoreCase: true, FullWord: true)) && fixedConsumed == 2,
+            "compact fixed patterns preserve case-insensitive full-word matching");
+        Assert(!fixedPattern.Matches("xABz"u8, 1, out _,
+                new PatternMatchOptions(IgnoreCase: true, FullWord: true)),
+            "compact fixed patterns enforce full-word boundaries");
+
+        var automaton = new ClamGuard.Signatures.Matching.AhoCorasickMatcher();
+        automaton.Add("he"u8, 0);
+        automaton.Add("she"u8, 1);
+        automaton.Add("his"u8, 2);
+        automaton.Add("hers"u8, 3);
+        var automatonHits = automaton.FindMatchingIds("ushers"u8);
+        Assert(automatonHits.SetEquals([0, 1, 3]),
+            "compact Aho-Corasick preserves overlapping and suffix matches");
+
+        var automatonState = 0;
+        var automatonMatches = new List<(int Id, long EndOffset)>();
+        automaton.Scan("ushe"u8, ref automatonState, 0, automatonMatches);
+        automaton.Scan("rs"u8, ref automatonState, 4, automatonMatches);
+        Assert(automatonMatches.Any(x => x.Id == 0 && x.EndOffset == 3) &&
+               automatonMatches.Any(x => x.Id == 1 && x.EndOffset == 3) &&
+               automatonMatches.Any(x => x.Id == 3 && x.EndOffset == 5),
+            "compact Aho-Corasick keeps suffix outputs and chunk-boundary offsets");
+
+        var ndbOnly = new ClamGuard.Signatures.Matching.CompiledSignatureSet();
+        ndbOnly.Add(new NdbSignature(
+            "Demo.Ndb", "demo.ndb", 0, "*", HexPatternParser.Parse("4e44424d414c")));
+        ndbOnly.Add(new ContentSignature(
+            "Demo.Content", SignatureType.Content, "demo.db", HexPatternParser.Parse("4f54484552")));
+        ndbOnly.Build();
+        Assert(ndbOnly.Match("NDBMAL"u8, "demo", includeNdb: false).Count == 0,
+            "includeNdb=false excludes fixed NDB patterns from the shared matcher");
+        Assert(ndbOnly.Match("NDBMAL"u8, "demo", includeNdb: true).Any(x => x.Name == "Demo.Ndb"),
+            "includeNdb=true keeps fixed NDB matching enabled");
+
+        var singleNdbOnly = new ClamGuard.Signatures.Matching.CompiledSignatureSet();
+        singleNdbOnly.Add(new NdbSignature(
+            "Demo.SingleNdb", "demo.ndb", 0, "*", HexPatternParser.Parse("4e44424d414c")));
+        singleNdbOnly.Build();
+        Assert(singleNdbOnly.Match("NDBMAL"u8, "demo", includeNdb: false).Count == 0,
+            "includeNdb=false also excludes NDB from the single-pattern fast path");
+
         var compiled = new ClamGuard.Signatures.Matching.CompiledSignatureSet();
         compiled.Add(new ClamGuard.Signatures.ContentSignature(
             "Demo.Pattern",

@@ -13,7 +13,8 @@ public sealed record IconMetric(
 
 public sealed record IconDatabaseEntry(string Name, string Group1, string Group2, IconMetric Metric)
 {
-    public string? SourceEntry { get; init; }
+    /// <summary>Original database line, retained only while applying .ign/.ign2 rules during load.</summary>
+    public string? SourceEntry { get; set; }
 }
 
 public sealed class IconDatabase

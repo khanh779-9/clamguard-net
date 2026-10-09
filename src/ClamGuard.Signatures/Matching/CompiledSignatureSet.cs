@@ -1,7 +1,6 @@
 using System.Security.Cryptography;
 using ClamGuard.Core;
 using ClamGuard.Signatures;
-using ClamGuard.Signatures.Patterns;
 
 namespace ClamGuard.Signatures.Matching;
 
@@ -11,12 +10,14 @@ namespace ClamGuard.Signatures.Matching;
 /// fixed signatures keep Aho-Corasick state across reads, hashes are incremental,
 /// and flexible signatures use a bounded rolling window.
 /// </summary>
-public sealed class CompiledSignatureSet
+public sealed partial class CompiledSignatureSet
 {
     private readonly List<ContentSignature> _content = [];
+    private readonly List<ContentSignature> _flexibleContent = [];
     private readonly List<NdbSignature> _ndb = [];
+    private readonly List<NdbSignature> _flexibleNdb = [];
     private readonly List<LogicalSignature> _logical = [];
-    private readonly LogicalSignaturePrefilter _logicalPrefilter = new();
+    private readonly LogicalSignaturePrefilter _logicalPrefilter;
     private readonly List<MetadataSignature> _metadata = [];
     private sealed class HashBucket
     {
@@ -36,12 +37,19 @@ public sealed class CompiledSignatureSet
     private readonly List<HashSignature> _specializedHashes = [];
     private readonly HashSet<HashAlgorithmKind> _hashAlgorithms = [];
     private readonly HashSet<HashAlgorithmKind> _falsePositiveAlgorithms = [];
-    private readonly Dictionary<int, ContentSignature> _acEntries = new();
-    private readonly Dictionary<int, NdbSignature> _ndbAcEntries = new();
+    // IDs are assigned in insertion order and never removed; lists are smaller
+    // than integer-key dictionaries and keep the NDB metadata aligned by ID.
+    private readonly List<ContentSignature> _acEntries = [];
+    private readonly List<NdbSignature?> _ndbAcEntries = [];
     private AhoCorasickMatcher _ac = new();
     private BoyerMooreHorspoolMatcher? _singleFixedMatcher;
     private ContentSignature? _singleFixedEntry;
     private bool _built;
+
+    public CompiledSignatureSet()
+    {
+        _logicalPrefilter = new LogicalSignaturePrefilter(_logical);
+    }
 
     public IReadOnlyList<Signature> AllSignatures =>
         _content.Cast<Signature>()
@@ -108,20 +116,28 @@ public sealed class CompiledSignatureSet
             }
             case NdbSignature ndb:
                 _ndb.Add(ndb);
-                if (ndb.MacroGroup is null && ndb.Pattern.IsFixed)
+                if (ndb.MacroGroup is null)
                 {
-                    var id = AddFixedPattern(ndb.Name, SignatureType.Ndb, ndb.SourceFile, ndb.Pattern, ndb.OffsetExpression);
-                    _ndbAcEntries[id] = ndb;
+                    if (ndb.Pattern.IsFixed)
+                    {
+                        var entry = new ContentSignature(ndb.Name, SignatureType.Ndb, ndb.SourceFile, ndb.Pattern, ndb.OffsetExpression);
+                        AddFixedPattern(entry, ndb);
+                    }
+                    else
+                    {
+                        _flexibleNdb.Add(ndb);
+                    }
                 }
                 break;
             case ContentSignature content:
                 _content.Add(content);
                 if (content.Pattern.IsFixed)
-                    AddFixedPattern(content.Name, content.Type, content.SourceFile, content.Pattern, content.OffsetExpression);
+                    AddFixedPattern(content);
+                else
+                    _flexibleContent.Add(content);
                 break;
             case LogicalSignature logical:
                 _logical.Add(logical);
-                _logicalPrefilter.Add(logical);
                 break;
             case MetadataSignature metadata:
                 _metadata.Add(metadata);
@@ -129,16 +145,11 @@ public sealed class CompiledSignatureSet
         }
     }
 
-    private int AddFixedPattern(
-        string name,
-        SignatureType type,
-        string sourceFile,
-        HexPattern pattern,
-        string offsetExpression)
+    private void AddFixedPattern(ContentSignature entry, NdbSignature? ndb = null)
     {
-        var id = _acEntries.Count;
-        _acEntries[id] = new ContentSignature(name, type, sourceFile, pattern, offsetExpression);
-        return id;
+        ArgumentNullException.ThrowIfNull(entry);
+        _acEntries.Add(entry);
+        _ndbAcEntries.Add(ndb);
     }
 
     public void Build()
@@ -148,8 +159,8 @@ public sealed class CompiledSignatureSet
         // Rebuild the trie from the canonical signature index. This makes Add()
         // safe even when signatures arrive in multiple database-loading passes.
         _ac = new AhoCorasickMatcher();
-        foreach (var (id, entry) in _acEntries.OrderBy(static x => x.Key))
-            _ac.Add(entry.Pattern.ToFixedBytes(), id);
+        for (var id = 0; id < _acEntries.Count; id++)
+            _ac.Add(_acEntries[id].Pattern.FixedBytesSpan, id);
         _ac.Build();
         _logicalPrefilter.Build();
 
@@ -158,7 +169,7 @@ public sealed class CompiledSignatureSet
         // the multi-pattern engine and keeps its cross-pattern sharing.
         if (_acEntries.Count == 1)
         {
-            _singleFixedEntry = _acEntries.Values.First();
+            _singleFixedEntry = _acEntries[0];
             if (_singleFixedEntry.Pattern.ToFixedBytes() is { Length: >= 8 } bytes)
                 _singleFixedMatcher = new BoyerMooreHorspoolMatcher(bytes);
         }
@@ -195,13 +206,13 @@ public sealed class CompiledSignatureSet
         Build();
         var hits = new Dictionary<string, Detection>(StringComparer.OrdinalIgnoreCase);
         if (_singleFixedMatcher is not null && _singleFixedEntry is not null)
-            MatchSingleFixed(_singleFixedMatcher, _singleFixedEntry, data, hits);
+            MatchSingleFixed(_singleFixedMatcher, _singleFixedEntry, data, hits, includeNdb);
         else
-            MatchAho(data, databaseLabel, hits, 0, data.Length, collectAllMatches);
+            MatchAho(data, hits, 0, data.Length, collectAllMatches, includeNdb);
         if (!collectAllMatches && hits.Count != 0)
             return hits.Values.Take(1).ToArray();
 
-        foreach (var content in _content.Where(x => !x.Pattern.IsFixed))
+        foreach (var content in _flexibleContent)
         {
             MatchFlexible(content, data, hits, 0);
             if (!collectAllMatches && hits.Count != 0)
@@ -210,10 +221,9 @@ public sealed class CompiledSignatureSet
 
         if (includeNdb)
         {
-            foreach (var ndb in _ndb.Where(x => x.MacroGroup is null && !x.Pattern.IsFixed))
+            foreach (var ndb in _flexibleNdb)
             {
-                var content = new ContentSignature(ndb.Name, SignatureType.Ndb, ndb.SourceFile, ndb.Pattern, ndb.OffsetExpression);
-                MatchFlexible(content, data, hits, 0, data.Length);
+                MatchFlexible(ndb, data, hits, 0, data.Length);
                 if (!collectAllMatches && hits.Count != 0)
                     return hits.Values.Take(1).ToArray();
             }
@@ -299,7 +309,8 @@ public sealed class CompiledSignatureSet
                 var item = _acEntries[id];
                 if (item.Type == SignatureType.Ndb)
                 {
-                    if (!includeNdb || !_ndbAcEntries.TryGetValue(id, out var ndb) || (ndbFilter is not null && !ndbFilter(ndb)))
+                    var ndb = _ndbAcEntries[id];
+                    if (!includeNdb || ndb is null || (ndbFilter is not null && !ndbFilter(ndb)))
                         continue;
                 }
                 var start = endOffset - item.Pattern.MinLength + 1;
@@ -316,8 +327,7 @@ public sealed class CompiledSignatureSet
                 }
             }
 
-            if (_content.Any(static x => !x.Pattern.IsFixed) ||
-                (includeNdb && _ndb.Any(static x => x.MacroGroup is null && !x.Pattern.IsFixed)))
+            if (_flexibleContent.Count != 0 || (includeNdb && _flexibleNdb.Count != 0))
             {
                 var combinedLength = rollingCount + read;
                 if (combinedLength > 0)
@@ -328,7 +338,7 @@ public sealed class CompiledSignatureSet
                     var view = scratch.AsSpan(0, combinedLength);
                     var viewStartOffset = absoluteOffset - rollingCount;
 
-                    foreach (var content in _content.Where(x => !x.Pattern.IsFixed))
+                    foreach (var content in _flexibleContent)
                     {
                         var before = hits.Count;
                         MatchFlexible(content, view, hits, viewStartOffset);
@@ -339,12 +349,13 @@ public sealed class CompiledSignatureSet
                     }
                     if (includeNdb)
                     {
-                        foreach (var ndb in _ndb.Where(x => x.MacroGroup is null && !x.Pattern.IsFixed &&
-                                                               (ndbFilter is null || ndbFilter(x))))
+                        foreach (var ndb in _flexibleNdb)
                         {
+                            if (ndbFilter is not null && !ndbFilter(ndb))
+                                continue;
+
                             var before = hits.Count;
-                            MatchFlexible(new ContentSignature(ndb.Name, SignatureType.Ndb, ndb.SourceFile, ndb.Pattern, ndb.OffsetExpression),
-                                          view, hits, viewStartOffset);
+                            MatchFlexible(ndb, view, hits, viewStartOffset);
                             if (!collectAllMatches && hits.Count != before && !mustFinishForFalsePositiveCheck)
                             {
                                 return (hits.Values.ToArray(), false, totalBytes);
@@ -462,117 +473,4 @@ public sealed class CompiledSignatureSet
                         _falsePositiveBuckets.ContainsKey((algorithm, null)));
         return hasDetection || hasTrust;
     }
-
-    private static bool TryGetApplicableBucket(
-        Dictionary<(HashAlgorithmKind Algorithm, long? Size), HashBucket> buckets,
-        HashAlgorithmKind algorithm,
-        long? size,
-        out HashBucket? bucket)
-    {
-        if (buckets.TryGetValue((algorithm, size), out var found))
-        {
-            bucket = found;
-            return true;
-        }
-        bucket = null;
-        return false;
-    }
-
-    private static bool HashBucketMatches(HashBucket? bucket, ReadOnlySpan<byte> digest)
-        => bucket is not null && bucket.ByDigest.TryGetValue(digest.ToArray(), out _);
-
-    private static void MatchHashBucket(HashBucket? bucket, ReadOnlySpan<byte> digest, Dictionary<string, Detection> hits)
-    {
-        if (bucket is null) return;
-        if (!bucket.ByDigest.TryGetValue(digest.ToArray(), out var signatures)) return;
-        foreach (var sig in signatures)
-            hits.TryAdd(sig.Name, new Detection(sig.Name, sig.Type, null, sig.SourceFile, $"{sig.Algorithm} whole-file hash matched."));
-    }
-
-    private static void MatchSingleFixed(
-        BoyerMooreHorspoolMatcher matcher,
-        ContentSignature entry,
-        ReadOnlySpan<byte> data,
-        Dictionary<string, Detection> hits)
-    {
-        var start = matcher.FindFirst(data);
-        if (start >= 0 && OffsetAllows(entry.OffsetExpression, start, data.Length))
-        {
-            hits.TryAdd(entry.Name, new Detection(entry.Name, entry.Type, start, entry.SourceFile, "Fixed content pattern matched by BM fast path."));
-        }
-    }
-
-    private void MatchAho(ReadOnlySpan<byte> data, string databaseLabel, Dictionary<string, Detection> hits, long baseOffset, long totalLength, bool collectAllMatches = true)
-    {
-        var state = 0;
-        var matches = new List<(int Id, long EndOffset)>();
-        _ac.Scan(data, ref state, baseOffset, matches);
-        foreach (var (id, endOffset) in matches)
-        {
-            var item = _acEntries[id];
-            var start = endOffset - item.Pattern.MinLength + 1;
-            if (start < baseOffset || !OffsetAllows(item.OffsetExpression, start, totalLength)) continue;
-            var relative = start - baseOffset;
-            if (relative < 0 || relative > int.MaxValue || relative >= data.Length) continue;
-            if (!item.Pattern.Matches(data, (int)relative, out var consumed)) continue;
-            if ((long)relative + consumed > data.Length) continue;
-            if (hits.TryAdd(item.Name, new Detection(item.Name, item.Type, start, item.SourceFile, "Content pattern matched.")) && !collectAllMatches)
-                return;
-        }
-    }
-
-    private static void MatchFlexible(ContentSignature signature, ReadOnlySpan<byte> data, Dictionary<string, Detection> hits, long baseOffset, long? knownLength = null)
-    {
-        var maxStart = data.Length - signature.Pattern.MinLength;
-        if (maxStart < 0) return;
-
-        for (var position = 0; position <= maxStart; position++)
-        {
-            var absolute = baseOffset + position;
-            if (!OffsetAllows(signature.OffsetExpression, absolute, knownLength ?? (baseOffset + data.Length))) continue;
-            if (!signature.Pattern.Matches(data, position, out _)) continue;
-            hits.TryAdd(signature.Name,
-                new Detection(signature.Name, signature.Type, absolute, signature.SourceFile, "Flexible content pattern matched."));
-            return;
-        }
-    }
-
-    private static bool OffsetAllows(string expression, long offset, long length)
-    {
-        if (string.IsNullOrWhiteSpace(expression) || expression == "*") return true;
-        if (expression.Equals("EOF", StringComparison.OrdinalIgnoreCase)) return offset == length;
-        if (expression.StartsWith("EOF-", StringComparison.OrdinalIgnoreCase) &&
-            long.TryParse(expression[4..], out var eofShift))
-            return offset == length - eofShift;
-        if (long.TryParse(expression, out var exact)) return offset == exact;
-        var parts = expression.Split(',', 2, StringSplitOptions.TrimEntries);
-        if (parts.Length == 2 && long.TryParse(parts[0], out var minimum) && long.TryParse(parts[1], out var maximum))
-            return offset >= minimum && offset <= maximum;
-        return false;
-    }
-
-    private static bool OffsetAllowsStreaming(string expression, long offset, long endOffset, long? expectedLength)
-    {
-        if (string.IsNullOrWhiteSpace(expression) || expression == "*") return true;
-        if (long.TryParse(expression, out var exact)) return offset == exact;
-        var parts = expression.Split(',', 2, StringSplitOptions.TrimEntries);
-        if (parts.Length == 2 && long.TryParse(parts[0], out var minimum) && long.TryParse(parts[1], out var maximum))
-            return offset >= minimum && offset <= maximum;
-        if (!expectedLength.HasValue) return false;
-        if (expression.Equals("EOF", StringComparison.OrdinalIgnoreCase))
-            return endOffset == expectedLength.Value - 1;
-        if (expression.StartsWith("EOF-", StringComparison.OrdinalIgnoreCase) &&
-            long.TryParse(expression[4..], out var eofShift))
-            return offset == expectedLength.Value - eofShift;
-        return false;
-    }
-
-    private static byte[] ComputeHash(HashAlgorithmKind algorithm, ReadOnlySpan<byte> data) => algorithm switch
-    {
-        HashAlgorithmKind.Md5 => MD5.HashData(data),
-        HashAlgorithmKind.Sha1 => SHA1.HashData(data),
-        HashAlgorithmKind.Sha256 => SHA256.HashData(data),
-        _ => throw new ArgumentOutOfRangeException(nameof(algorithm))
-    };
-
 }

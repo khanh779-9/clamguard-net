@@ -10,14 +10,11 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ClamGuard.Database", "src\C
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ClamGuard.Scanner", "src\ClamGuard.Scanner\ClamGuard.Scanner.csproj", "{44444444-4444-4444-4444-444444444444}"
 EndProject
-EndProject
-EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ClamGuard.Tests", "tests\ClamGuard.Tests\ClamGuard.Tests.csproj", "{77777777-7777-7777-7777-777777777777}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ClamGuard.Yara", "src\ClamGuard.Yara\ClamGuard.Yara.csproj", "{88888888-8888-8888-8888-888888888888}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ClamGuard.Bytecode", "src\ClamGuard.Bytecode\ClamGuard.Bytecode.csproj", "{99999999-9999-9999-9999-999999999999}"
-EndProject
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ClamGuard.Antivirus", "src\ClamGuard.Antivirus\ClamGuard.Antivirus.csproj", "{77FC7BED-4C05-4027-B66A-6A597F4F8798}"
 EndProject

@@ -210,15 +210,6 @@ internal sealed partial class ClamBcVirtualMachine
         return unchecked((ulong)value);
     }
 
-    private static ulong ParseHexByte(byte value)
-        => value switch
-        {
-            >= (byte)'0' and <= (byte)'9' => (uint)(value - '0'),
-            >= (byte)'a' and <= (byte)'f' => (uint)(value - 'a' + 10),
-            >= (byte)'A' and <= (byte)'F' => (uint)(value - 'A' + 10),
-            _ => 0
-        };
-
     private ulong ApiWrite(ulong[] args)
     {
         if (args.Length < 2 || !TryPointer(args[0], out var ptr)) return unchecked((ulong)-1);

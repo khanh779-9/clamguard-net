@@ -4,40 +4,78 @@ public readonly record struct PatternMatchOptions(
     bool IgnoreCase = false,
     bool FullWord = false);
 
+/// <summary>
+/// Represents a parsed hexadecimal pattern. Exact-byte-only patterns are stored
+/// as a compact byte array rather than a reference to an atom object per byte.
+/// The polymorphic atom view is materialized lazily only for callers that need it.
+/// </summary>
 public sealed class HexPattern
 {
     private const int MaxBacktrackingStates = 250_000;
 
-    public IReadOnlyList<PatternAtom> Atoms { get; }
-    public int MinLength => Atoms.Sum(static x => x.MinLength);
-    public int MaxLength => Atoms.Any(static x => x.MaxLength == int.MaxValue)
-        ? int.MaxValue
-        : Atoms.Sum(static x => x.MaxLength);
-    public bool IsFixed => Atoms.All(static x => x is ExactByteAtom);
-    public bool IsLegacyFixedNegatedAlternate => Atoms.Count == 1 &&
-                                                   Atoms[0] is AlternatePatternAtom { Negated: true } alternate &&
-                                                   alternate.Alternatives.All(static x => x.IsFixed) &&
-                                                   alternate.Alternatives.Select(static x => x.MinLength).Distinct().Count() == 1;
+    private readonly byte[]? _fixedBytes;
+    private PatternAtom[]? _atoms;
+    private readonly int _minLength;
+    private readonly int _maxLength;
+
+    public IReadOnlyList<PatternAtom> Atoms => GetAtoms();
+    public int MinLength => _minLength;
+    public int MaxLength => _maxLength;
+    public bool IsFixed => _fixedBytes is not null;
+    internal ReadOnlySpan<byte> FixedBytesSpan => _fixedBytes ??
+        throw new InvalidOperationException("The pattern is not fixed-length exact bytes.");
+
+    public bool IsLegacyFixedNegatedAlternate =>
+        _atoms is { Length: 1 } &&
+        _atoms[0] is AlternatePatternAtom { Negated: true } alternate &&
+        alternate.Alternatives.All(static x => x.IsFixed) &&
+        alternate.Alternatives.Select(static x => x.MinLength).Distinct().Count() == 1;
 
     public HexPattern(IEnumerable<PatternAtom> atoms)
     {
         ArgumentNullException.ThrowIfNull(atoms);
-        Atoms = atoms.ToArray();
-        if (Atoms.Count == 0)
+        var materialized = atoms.ToArray();
+        if (materialized.Length == 0)
             throw new ArgumentException("A pattern cannot be empty.", nameof(atoms));
+
+        if (materialized.All(static atom => atom is ExactByteAtom))
+        {
+            _fixedBytes = new byte[materialized.Length];
+            for (var index = 0; index < materialized.Length; index++)
+                _fixedBytes[index] = ((ExactByteAtom)materialized[index]).Value;
+            _minLength = _fixedBytes.Length;
+            _maxLength = _fixedBytes.Length;
+            // The temporary atom array is intentionally not retained.
+        }
+        else
+        {
+            _atoms = materialized;
+            _minLength = materialized.Sum(static atom => atom.MinLength);
+            _maxLength = materialized.Any(static atom => atom.MaxLength == int.MaxValue)
+                ? int.MaxValue
+                : materialized.Sum(static atom => atom.MaxLength);
+        }
     }
 
     public byte[] ToFixedBytes()
     {
-        if (!IsFixed)
+        if (_fixedBytes is null)
             throw new InvalidOperationException("The pattern contains wildcards, ranges, classes or alternates.");
 
-        return Atoms.Cast<ExactByteAtom>().Select(static x => x.Value).ToArray();
+        // Do not expose the internal storage to callers that may mutate the array.
+        return (byte[])_fixedBytes.Clone();
     }
-
 
     public HexPattern ToWideVariant()
     {
+        if (_fixedBytes is not null)
+        {
+            var wideBytes = new byte[checked(_fixedBytes.Length * 2)];
+            for (var index = 0; index < _fixedBytes.Length; index++)
+                wideBytes[index * 2] = _fixedBytes[index];
+            return new HexPattern(wideBytes.Select(ExactByteAtom.From));
+        }
+
         var expanded = new List<PatternAtom>();
         foreach (var atom in Atoms)
         {
@@ -45,11 +83,11 @@ public sealed class HexPattern
             {
                 case ExactByteAtom exact:
                     expanded.Add(exact);
-                    expanded.Add(new ExactByteAtom(0));
+                    expanded.Add(ExactByteAtom.From(0));
                     break;
                 case MaskedByteAtom masked:
                     expanded.Add(masked);
-                    expanded.Add(new ExactByteAtom(0));
+                    expanded.Add(ExactByteAtom.From(0));
                     break;
                 case AlternatePatternAtom alternate when !alternate.Negated:
                     expanded.Add(new AlternatePatternAtom(alternate.Alternatives.Select(static x => x.ToWideVariant()).ToArray()));
@@ -70,6 +108,7 @@ public sealed class HexPattern
                     break;
             }
         }
+
         return new HexPattern(expanded);
     }
 
@@ -79,10 +118,14 @@ public sealed class HexPattern
         if (start < 0 || start > data.Length)
             return false;
 
+        if (_fixedBytes is not null)
+            return MatchesFixed(data, start, options, out consumed);
+
         var stack = new Stack<(int AtomIndex, int Position)>();
         var visited = new HashSet<(int AtomIndex, int Position)>();
         stack.Push((0, start));
         var states = 0;
+        var atoms = _atoms!;
 
         while (stack.Count != 0)
         {
@@ -93,7 +136,7 @@ public sealed class HexPattern
             if (!visited.Add((atomIndex, position)))
                 continue;
 
-            if (atomIndex == Atoms.Count)
+            if (atomIndex == atoms.Length)
             {
                 if (options.FullWord && !IsFullWordBoundary(data, start, position))
                     continue;
@@ -101,7 +144,7 @@ public sealed class HexPattern
                 return true;
             }
 
-            switch (Atoms[atomIndex])
+            switch (atoms[atomIndex])
             {
                 case ExactByteAtom exact when position < data.Length &&
                     EqualByte(data[position], exact.Value, options.IgnoreCase):
@@ -140,6 +183,41 @@ public sealed class HexPattern
         }
 
         return false;
+    }
+
+    private bool MatchesFixed(ReadOnlySpan<byte> data, int start, PatternMatchOptions options, out int consumed)
+    {
+        consumed = 0;
+        var fixedBytes = _fixedBytes!;
+        if (fixedBytes.Length > data.Length - start)
+            return false;
+
+        for (var index = 0; index < fixedBytes.Length; index++)
+        {
+            if (!EqualByte(data[start + index], fixedBytes[index], options.IgnoreCase))
+                return false;
+        }
+
+        var end = start + fixedBytes.Length;
+        if (options.FullWord && !IsFullWordBoundary(data, start, end))
+            return false;
+
+        consumed = fixedBytes.Length;
+        return true;
+    }
+
+    private PatternAtom[] GetAtoms()
+    {
+        var existing = Volatile.Read(ref _atoms);
+        if (existing is not null)
+            return existing;
+
+        var bytes = _fixedBytes ?? throw new InvalidOperationException("Pattern atom storage is unavailable.");
+        var created = new PatternAtom[bytes.Length];
+        for (var index = 0; index < bytes.Length; index++)
+            created[index] = ExactByteAtom.From(bytes[index]);
+
+        return Interlocked.CompareExchange(ref _atoms, created, null) ?? created;
     }
 
     private static void MatchAlternate(
@@ -273,7 +351,9 @@ public sealed class HexPattern
         return (actual & mask) == (expected & mask);
     }
 
-    public override string ToString() => string.Concat(Atoms.Select(FormatAtom));
+    public override string ToString() => _fixedBytes is not null
+        ? Convert.ToHexString(_fixedBytes).ToLowerInvariant()
+        : string.Concat(Atoms.Select(FormatAtom));
 
     private static string FormatAtom(PatternAtom atom) => atom switch
     {

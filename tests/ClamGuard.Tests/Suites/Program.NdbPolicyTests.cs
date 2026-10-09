@@ -144,6 +144,8 @@ internal static partial class Program
         Assert(ignLoaded.SignatureCount == 2 &&
                ignLoaded.Database.Signatures.Select(x => x.Name).OrderBy(x => x, StringComparer.Ordinal).SequenceEqual(new[] { "Ignore.ConditionalMismatch", "Keep.Signature" }),
             ".ign/.ign2 suppress direct, conditional-MD5, legacy and normalized signature rules while preserving non-matching rules");
+        Assert(ignLoaded.Database.Signatures.All(static signature => signature.SourceEntry is null),
+            "original signature lines are released after .ign/.ign2 filtering to reduce retained database memory");
         var ignManager = new DatabaseManager();
         ignManager.LoadAndCompile(ignDbDir, true);
         var ignScanner = new ClamGuard.Scanner.ScannerEngine(ignManager);

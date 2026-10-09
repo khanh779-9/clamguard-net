@@ -114,7 +114,7 @@ public static class HexPatternParser
             }
             else
             {
-                atoms.Add(new ExactByteAtom((byte)((ParseNibble(hi) << 4) | ParseNibble(lo))));
+                atoms.Add(ExactByteAtom.From((byte)((ParseNibble(hi) << 4) | ParseNibble(lo))));
             }
             i += 2;
         }
@@ -210,11 +210,11 @@ public static class HexPatternParser
     }
 
 
-    private static bool ContainsUnboundedGap(HexPattern pattern) => pattern.Atoms.Any(atom =>
+    private static bool ContainsUnboundedGap(HexPattern pattern) => !pattern.IsFixed && pattern.Atoms.Any(atom =>
         atom is GapAtom { MaxBytes: int.MaxValue } ||
         atom is AlternatePatternAtom nested && nested.Alternatives.Any(ContainsUnboundedGap));
 
-    private static bool ContainsTooWideGenericRange(HexPattern pattern) => pattern.Atoms.Any(atom =>
+    private static bool ContainsTooWideGenericRange(HexPattern pattern) => !pattern.IsFixed && pattern.Atoms.Any(atom =>
         atom is GapAtom { MaxBytes: > 127 } && atom is not GapAtom { MaxBytes: int.MaxValue } ||
         atom is AlternatePatternAtom nested && nested.Alternatives.Any(ContainsTooWideGenericRange));
     private static int ParseInt(string value)

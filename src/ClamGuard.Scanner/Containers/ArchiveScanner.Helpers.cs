@@ -177,10 +177,6 @@ internal static partial class ArchiveScanner
         };
     }
 
-    private static bool IsMachOMagic(uint magic)
-        => magic is 0xCAFEBABEu or 0xBEBAFECAu or 0xCAFEBABFu or 0xBFBAFECAu or
-                  0xFEEDFACEu or 0xCEFAEDFEu or 0xFEEDFACFu or 0xCFFAEDFEu;
-
     private static bool TryReadEntry(Stream input, long expectedLength, ScanLimits limits, ArchiveScanBudget budget, CancellationToken token, out byte[] child)
         => TryReadStream(input, Math.Min(expectedLength, limits.MaxFileSize), limits, budget, token, out child);
 
@@ -348,15 +344,4 @@ internal static partial class ArchiveScanner
         return Encoding.ASCII.GetString(end < 0 ? data : data[..end]);
     }
 
-    private static bool LooksAscii(ReadOnlySpan<byte> data)
-    {
-        if (data.IsEmpty) return false;
-        var printable = 0;
-        foreach (var b in data)
-        {
-            if (b == 0) return false;
-            if (b is >= 0x20 and <= 0x7e or 0x09 or 0x0a or 0x0d or 0x0c) printable++;
-        }
-        return printable >= data.Length * 0.9;
-    }
 }

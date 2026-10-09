@@ -16,55 +16,50 @@ internal sealed class LogicalSignaturePrefilter
     private const ulong FnvOffsetBasis = 14695981039346656037UL;
     private const ulong FnvPrime = 1099511628211UL;
 
-    private readonly List<LogicalSignature> _signatures = [];
-    private readonly Dictionary<ulong, List<LogicalSignature>> _signaturesBySeed = [];
+    private readonly IReadOnlyList<LogicalSignature> _signatures;
+    private readonly Dictionary<ulong, SeedBucket> _signaturesBySeed = [];
+    private readonly List<SeedEntry> _seedEntries = [];
     private readonly HashSet<LogicalSignature> _indexed = new(ReferenceEqualityComparer.Instance);
+    private int _builtSignatureCount = -1;
     private bool _built;
 
-    internal void Add(LogicalSignature signature)
+    internal LogicalSignaturePrefilter(IReadOnlyList<LogicalSignature> signatures)
     {
-        ArgumentNullException.ThrowIfNull(signature);
-        _signatures.Add(signature);
-        _built = false;
+        ArgumentNullException.ThrowIfNull(signatures);
+        _signatures = signatures;
     }
 
     internal void Build()
     {
-        if (_built)
+        if (_built && _builtSignatureCount == _signatures.Count)
             return;
 
         _signaturesBySeed.Clear();
+        _seedEntries.Clear();
         _indexed.Clear();
 
-        var eligible = new List<(LogicalSignature Signature, byte[][] Variants)>();
+        // Process one signature at a time. Keeping every signature's materialized
+        // anchor bytes in a staging list caused avoidable peak memory during load.
         foreach (var signature in _signatures)
         {
             if (!TryGetAnchorVariants(signature, out var variants))
                 continue;
-            eligible.Add((signature, variants));
-        }
 
-        // Pick one exact 8-byte fragment from each possible anchor representation.
-        // Reusing an existing key is allowed, but the fragment selector prefers a
-        // currently unused key to keep candidate buckets small without a second
-        // large n-gram-frequency table.
-        var seedFrequency = new Dictionary<ulong, int>();
-        foreach (var (signature, variants) in eligible)
-        {
             var selectedSeeds = new HashSet<ulong>();
             foreach (var variant in variants)
-                selectedSeeds.Add(SelectSeed(variant, seedFrequency));
+                selectedSeeds.Add(SelectSeed(variant, _signaturesBySeed));
 
             _indexed.Add(signature);
             foreach (var seed in selectedSeeds)
             {
-                if (!_signaturesBySeed.TryGetValue(seed, out var matches))
-                    _signaturesBySeed[seed] = matches = [];
-                matches.Add(signature);
-                seedFrequency[seed] = matches.Count;
+                var exists = _signaturesBySeed.TryGetValue(seed, out var existing);
+                var entryIndex = _seedEntries.Count;
+                _seedEntries.Add(new SeedEntry(signature, exists ? existing.Head : -1));
+                _signaturesBySeed[seed] = new SeedBucket(entryIndex, existing.Count + 1);
             }
         }
 
+        _builtSignatureCount = _signatures.Count;
         _built = true;
     }
 
@@ -78,11 +73,11 @@ internal sealed class LogicalSignaturePrefilter
         for (var offset = 0; offset <= data.Length - SeedLength; offset++)
         {
             var seed = BinaryPrimitives.ReadUInt64LittleEndian(data.Slice(offset, SeedLength));
-            if (!_signaturesBySeed.TryGetValue(seed, out var signatures))
+            if (!_signaturesBySeed.TryGetValue(seed, out var bucket))
                 continue;
 
-            foreach (var signature in signatures)
-                candidates.Add(signature);
+            for (var entryIndex = bucket.Head; entryIndex >= 0; entryIndex = _seedEntries[entryIndex].Next)
+                candidates.Add(_seedEntries[entryIndex].Signature);
 
             if (candidates.Count == _indexed.Count)
                 break;
@@ -131,7 +126,9 @@ internal sealed class LogicalSignaturePrefilter
         return true;
     }
 
-    private static ulong SelectSeed(ReadOnlySpan<byte> pattern, IReadOnlyDictionary<ulong, int> frequency)
+    private static ulong SelectSeed(
+        ReadOnlySpan<byte> pattern,
+        IReadOnlyDictionary<ulong, SeedBucket> frequency)
     {
         var lastOffset = pattern.Length - SeedLength;
         var offset = GetInitialSeedOffset(pattern, lastOffset + 1);
@@ -142,7 +139,7 @@ internal sealed class LogicalSignaturePrefilter
         {
             var currentOffset = (offset + checkedOffsets) % (lastOffset + 1);
             var seed = BinaryPrimitives.ReadUInt64LittleEndian(pattern.Slice(currentOffset, SeedLength));
-            frequency.TryGetValue(seed, out var currentFrequency);
+            var currentFrequency = frequency.TryGetValue(seed, out var bucket) ? bucket.Count : 0;
 
             if (currentFrequency == 0)
                 return seed;
@@ -229,4 +226,7 @@ internal sealed class LogicalSignaturePrefilter
         if (signature.MatchOptions.HasFlag(ContentMatchOptions.Wide))
             yield return signature.Pattern.ToWideVariant();
     }
+
+    private readonly record struct SeedBucket(int Head, int Count);
+    private readonly record struct SeedEntry(LogicalSignature Signature, int Next);
 }

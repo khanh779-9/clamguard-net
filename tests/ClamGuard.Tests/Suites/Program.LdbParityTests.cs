@@ -99,6 +99,25 @@ internal static partial class Program
             var nonPeResult = scanner.Scan(nonPePath, new ScanOptions { CollectAllMatches = true });
             Assert(!nonPeResult.Detections.Any(x => x.Name == "Win.Malware.Generic-9828792-0"),
                 "the reference Target:1 signature does not alert on the same markers in a non-PE file");
+
+            // Exercise a seed shared by more than one logical rule. The compact
+            // fragment index stores collision chains in one flat array.
+            var collisionDatabasePath = Path.Combine(databaseDirectory, "collision.ldb");
+            const string sharedAnchor = "4142434445464748";
+            File.WriteAllText(collisionDatabasePath,
+                $"Demo.Collision.One;Engine:81-255,Target:1;0&1;{sharedAnchor};{sharedAnchor}{Environment.NewLine}" +
+                $"Demo.Collision.Two;Engine:81-255,Target:1;0&1;{sharedAnchor};{sharedAnchor}{Environment.NewLine}",
+                Encoding.ASCII);
+            var collisionManager = new DatabaseManager();
+            var collisionState = collisionManager.LoadAndCompile(databaseDirectory, failOnInvalidFile: true);
+            var collisionSignatures = collisionState.Database.Signatures
+                .OfType<LogicalSignature>()
+                .Where(static signature => signature.Name.StartsWith("Demo.Collision.", StringComparison.Ordinal))
+                .ToArray();
+            var collisionCandidates = collisionState.Compiled.FindLogicalCandidates(
+                BuildPeWithImport(false).Concat(Convert.FromHexString(sharedAnchor)).ToArray());
+            Assert(collisionSignatures.Length == 2 && collisionSignatures.All(collisionCandidates.Contains),
+                "logical prefilter returns every signature sharing the same fragment seed");
         }
         finally
         {

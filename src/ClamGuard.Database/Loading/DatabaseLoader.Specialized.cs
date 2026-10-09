@@ -81,15 +81,12 @@ public sealed partial class DatabaseLoader
                 .ToArray();
             if (filteredEntries.Length == 0)
                 return;
-            if (db.IconDatabase is null)
+            db.IconDatabase ??= new IconDatabase();
+            foreach (var entry in filteredEntries)
             {
-                db.IconDatabase = new IconDatabase();
-                foreach (var entry in filteredEntries)
-                    db.IconDatabase.Add(entry);
+                entry.SourceEntry = null;
+                db.IconDatabase.Add(entry);
             }
-            else
-                foreach (var entry in filteredEntries)
-                    db.IconDatabase.Add(entry);
             infos.Add(new DatabaseInfo(
                 Path.GetFileName(path),
                 DatabaseFormat.TextSignature,
@@ -112,6 +109,9 @@ public sealed partial class DatabaseLoader
             if (ignoreRules.ShouldIgnore(signature))
                 continue;
 
+            // Conditional .ign/.ign2 rules need the raw line only while loading.
+            // Releasing it here avoids retaining one extra string per live signature.
+            signature.SourceEntry = null;
             db.Add(signature);
             count++;
         }
@@ -223,7 +223,7 @@ public sealed partial class DatabaseLoader
                 continue;
             if (min is not null && min > EngineFunctionalityLevel) continue;
             if (max is not null && max < EngineFunctionalityLevel) continue;
-            db.SpecialDatabases.DynamicConfig.Add(new DynamicConfigEntry(module, value, min, max, path, raw));
+            db.SpecialDatabases.DynamicConfig.Add(new DynamicConfigEntry(module, value, min, max, path));
             count++;
         }
         AddSpecialInfo(path, count, infos);
@@ -254,7 +254,7 @@ public sealed partial class DatabaseLoader
             if (raw.Length == 0) throw new FormatException($"Blank phishing database line in {path}");
             // ClamAV passes these lines into its PCRE-based regex matcher. Preserve
             // the source expression verbatim; do not reinterpret PCRE as .NET regex.
-            db.SpecialDatabases.PhishingRules.Add(new PhishingDatabaseRule(raw, allowList, path, raw));
+            db.SpecialDatabases.PhishingRules.Add(new PhishingDatabaseRule(raw, allowList, path));
             count++;
         }
         AddSpecialInfo(path, count, infos);
@@ -277,7 +277,7 @@ public sealed partial class DatabaseLoader
             byte[] value;
             if (storageType == 0) value = Encoding.UTF8.GetBytes(parts[3]);
             else if (!TryHex(parts[3], out value)) throw new FormatException($"Invalid encoded PWDB password in {path}: {raw}");
-            db.SpecialDatabases.Passwords.Add(new PasswordDatabaseEntry(parts[0], attrs, container, storageType, value, path, raw));
+            db.SpecialDatabases.Passwords.Add(new PasswordDatabaseEntry(parts[0], attrs, container, storageType, value, path));
             count++;
         }
         AddSpecialInfo(path, count, infos);
@@ -326,7 +326,7 @@ public sealed partial class DatabaseLoader
             if (parts[9].Length != 0 && long.TryParse(parts[9], out var nb)) notBefore = nb;
             db.SpecialDatabases.Certificates.Add(new CertificateDatabaseRule(
                 parts[0], trust == 0, subject, serial, parts[4], codeSign == 1, timeSign == 1, certSign == 1,
-                notBefore, min, max, path, raw));
+                notBefore, min, max, path));
             count++;
         }
         AddSpecialInfo(path, count, infos);
@@ -386,7 +386,7 @@ public sealed partial class DatabaseLoader
                 var sanitizedName = new string(path.Select(ch => ch is '\\' or '/' or '?' or '%' or '*' or ':' or '|' or '"' or '<' or '>' || char.IsWhiteSpace(ch) ? '_' : ch).ToArray());
                 var name = $"{sanitizedName}.{hashText}";
                 var algorithm = hashText.Length switch { 32 => HashAlgorithmKind.Md5, 40 => HashAlgorithmKind.Sha1, 64 => HashAlgorithmKind.Sha256, _ => throw new FormatException("Unsupported IOC hash length") };
-                db.AddRange(new[] { new HashSignature(name, SignatureType.Hash, path, algorithm, Convert.FromHexString(hashText), null) { SourceEntry = hashText } });
+                db.AddRange(new[] { new HashSignature(name, SignatureType.Hash, path, algorithm, Convert.FromHexString(hashText), null) });
                 count++;
             }
         }

@@ -1,156 +1,171 @@
 # ClamGuard.NET
 
-An independent .NET malware scanning engine inspired by the public behavior and documented signature formats used by ClamAV 1.5.x.
+ClamGuard.NET is a managed malware-scanning engine and a Windows WPF desktop application written in C# on .NET 8. It loads ClamAV-style signature databases, matches files against supported signature formats, and scans supported archive and document layers under configured resource limits.
 
-## Scope
+> **Compatibility note:** ClamGuard.NET is an independent managed implementation, not a drop-in replacement for ClamAV. Signature-format support and scanning behavior vary by feature. The regression harness covers implemented behavior, but it does not establish complete behavioral parity with the native ClamAV engine.
 
-This repository is a clean architectural reimplementation written from scratch in C#. It does **not** copy ClamAV C/C++ implementation code, translated function bodies, internal struct layouts, or generated source files.
+## Features
 
-Implemented in this first delivery:
+- Loads supported ClamAV database containers (`.cvd`, `.cld`, `.cud`) and signature database families.
+- Parses and matches hash signatures, hexadecimal content patterns, NDB rules, logical LDB rules, metadata signatures, and selected specialized database formats.
+- Uses a sparse Aho–Corasick matcher for fixed-byte patterns and a Boyer–Moore–Horspool fast path when a single suitable fixed pattern is present.
+- Supports chunked scanning with matcher state preserved across read boundaries and incremental whole-file hashing.
+- Includes target-aware file-type detection and dedicated handling for selected PE, archive, image, PDF/SWF, Office/OLE, mail, HTML, and document formats.
+- Provides bounded archive expansion, parser depth, entry-count, decompression, and scan-size controls.
+- Includes a database update component, a bounded scan host, and a Windows WPF user interface for scanning, updates, history, and quarantine workflows.
+- Provides a regression harness for database loading, signature parsing, matchers, scan orchestration, and supported specialized handlers.
 
-- CVD header inspection and metadata extraction
-- Plain-text database discovery
-- Hash signature loading (`.hdb`, `.hsb`, `.hdu`, `.hsu`, `.fp`, `.sfp`, `.mdb`, `.msb`, `.imp`)
-- Extended NDB signature loading and target-aware matching
-- Extended LDB logical signatures with boolean/count expressions, target/functionality filtering, modifiers, macros, PCRE triggers, and byte-compare subsignatures
-- ClamAV-style hexadecimal patterns with exact bytes, nibble wildcards, byte wildcards, bounded/unbounded gaps, character classes, and generic/fixed alternates
-- Aho-Corasick acceleration for fixed byte patterns, with a BM fast path for a single long exact rule
-- Whole-file MD5/SHA-1/SHA-256 matching with size-specific/wildcard digest indexes
-- Chunked root-file scanning with stateful Aho-Corasick and incremental whole-file hashing
-- Memory-mapped root-file access to avoid eagerly materializing ordinary scans into one managed byte array
-- Recursive container/document scanning with bounded depth, entry count, expanded bytes, compression ratio, and optional external-codec timeouts
-- Safe temporary-file database installation
-- Full CVD download update path
-- CLI for `db info`, `db load`, `scan`, and `update`
+## Requirements
 
-Remaining compatibility gaps:
+- .NET 8 SDK to build and run the regression harness.
+- Windows for the WPF desktop application.
+- Network access only when downloading or updating official database files.
 
-- Advanced YARA language features outside the managed compatibility subset: modules, imports/includes, externals, rich arithmetic/loop conditions, and every hex-string construct
-- Native-only ClamBC backends whose behavior depends on native process/JIT integrations or codecs without a safe built-in .NET equivalent (LZMA/BZip2/JS/disassembler/JIT/extraction callback ABI) are fail-closed rather than executed unsafely
-- PE packer/unpacker modules, Authenticode/iShield parsing, and complete PE ordinal-name parity beyond the current extended surface
-- Additional deep document semantics (HWP/OneNote/RTF/mail internals, richer OOXML/PDF object/xref/encryption features) and archive variants not supported by the selected external decoder
-- Native filesystem/archive parsers for some specialized formats remain intentionally outside the managed decoder set; compatible external decoders can be used through the guarded archive bridge where configured
-- Full native `.cat` Authenticode catalog/X.509 extraction and every native YARA/ClamBC feature remain separate compatibility tracks; the database loader now recognizes, validates, and records all official database extension families.
-- Production deployment still requires environment-specific fuzz/performance/service acceptance tests in the target infrastructure; the repository provides the bounded runtime, verification gates, CI workflow, regression harness, and observability primitives needed for that acceptance
+The scanner uses [SharpCompress 0.50.4](https://github.com/adamhathcock/sharpcompress) for selected managed archive operations. Optional external decoders are only available when separately installed and discoverable through `PATH` and enabled by the relevant configuration.
 
-The current streaming matcher guarantees chunk-boundary continuity for fixed patterns and bounded patterns within `MaxFlexibleLookbehind`. Unbounded-gap patterns remain intentionally bounded during streaming; advanced LDB/NDB target-aware evaluation is performed through the full-buffer compatibility path so relative offsets, normalization, macros, and logical counting have complete file context.
+## Build and test
 
-Those are intentionally explicit gaps; the project never reports them as implemented when they are not.
+Run these commands from the repository root:
 
-## WPF desktop app
-
-`ClamGuard.Antivirus` is a small Windows desktop client built on top of the managed engine projects. It intentionally keeps realtime protection at the `FileSystemWatcher` level; it is not a kernel filesystem minifilter or a complete Windows Defender replacement.
-
-## License / provenance note
-
-The source repository is an independent implementation. ClamGuard.NET is not a relicensing or license-evasion wrapper around ClamAV source. The implementation uses independently written C# code and public behavioral/format knowledge.
-
-This statement is not legal advice and it does not guarantee that every use, database, signature file, or deployment scenario is exempt from third-party licensing or other legal requirements. Review the licenses and terms for the exact databases and assets you distribute.
-
-## Target framework
-
-- .NET 8
-- C# 12
-- Core parsing/matching uses .NET base libraries; `ClamGuard.Scanner` references SharpCompress for managed archive support. Optional external decoders are resolved from `PATH`.
-
-## Quick start
-
-```bash
-dotnet build ClamGuard.Net.sln
+```powershell
+dotnet restore .\ClamGuard.Net.sln
+dotnet build .\ClamGuard.Net.sln --configuration Release
+dotnet run --project .\tests\ClamGuard.Tests\ClamGuard.Tests.csproj --configuration Release
 ```
+
+The test project is an executable regression harness rather than a `dotnet test` test assembly. A successful run prints its success summary after all registered suites complete.
+
+## Run the desktop application
+
+On Windows, with the .NET 8 SDK installed:
+
+```powershell
+dotnet run --project .\src\ClamGuard.Antivirus\ClamGuard.Antivirus.csproj --configuration Release
+```
+
+By default, the application stores its database and cache under the common application-data directory:
+
+- Database: `%ProgramData%\ClamGuard\database`
+- Extracted database cache: `%ProgramData%\ClamGuard\cache`
+- YARA rules: `%ProgramData%\ClamGuard\yara`
+- Bytecode files: `%ProgramData%\ClamGuard\bytecode`
+- Per-user settings: `%LocalAppData%\ClamGuard\Antivirus\settings.json`
+
+The database directory can be changed in application settings. Use valid database files from an authorized source. The small files under `samples/database/` are test fixtures, not a production malware database.
+
+## Optional real-sample regression check
+
+The harness can check a locally held `000.exe` against the exact `Win.Malware.Generic-9828792-0` LDB rule from an extracted ClamAV database. Keep the sample and database outside this repository; the project does not require malware samples to be committed.
+
+```powershell
+$env:CLAMGUARD_REAL_000_EXE = "C:\Samples\000.exe"
+$env:CLAMGUARD_DAILY_LDB_PATH = "C:\ClamAV\daily.ldb"
+dotnet run --project .\tests\ClamGuard.Tests\ClamGuard.Tests.csproj --configuration Release
+```
+
+This is an opt-in regression check, not a certification of full ClamAV parity. Do not execute unknown samples as part of testing; the scanner should inspect file content without launching the sample.
 
 ## Project layout
 
-- `ClamGuard.Core`: shared domain models and configuration
-- `ClamGuard.Signatures`: signature models, parsers and matchers
-- `ClamGuard.Database`: database discovery, loaders and CVD support
-- `ClamGuard.Scanner`: scan orchestration
-- `ClamGuard.Database/Update`: remote CVD update workflow and verified CDIFF application
-- `ClamGuard.Yara`: optional managed YARA engine and scanner adapter
-- `ClamGuard.Bytecode`: bounded managed ClamBC parser/interpreter, public API dispatcher, and scanner adapter
-- `ClamGuard.Scanner/Hosting`: bounded admission/concurrency, timeouts, health gating, metrics and lifecycle management
-- `ClamGuard.Antivirus`: Windows WPF frontend for file/folder scanning, realtime monitoring, database updates, themes, toast notifications and custom dialogs
-- `ClamGuard.Tests`: executable regression harness for parsers, matchers, archive behavior, scan-host lifecycle and engine integration
+```text
+ClamGuard.Net.sln
+├── src/
+│   ├── ClamGuard.Antivirus/       Windows WPF application, views, view models and services
+│   ├── ClamGuard.Bytecode/        Bounded ClamBC parsing and managed runtime
+│   │   ├── Models/                Bytecode data models
+│   │   ├── Parsing/               Bytecode parser
+│   │   ├── Runtime/               Engine, VM and host API
+│   │   └── Scanning/              Scanner integration
+│   ├── ClamGuard.Core/            Shared domain types and low-level utilities
+│   ├── ClamGuard.Database/        Database loading, verification, storage and updates
+│   │   ├── Loading/               Text/container loading and ignore rules
+│   │   ├── Models/                Database load result/error models
+│   │   ├── Storage/               Parsed database and runtime configuration
+│   │   ├── Update/                CVD update and CDIFF patch support
+│   │   └── Verification/          Container and signature verification
+│   ├── ClamGuard.Scanner/         Scan pipeline and file/content handlers
+│   │   ├── Archives/              Managed and guarded external archive decoding
+│   │   ├── Containers/            Container/document traversal and extraction
+│   │   ├── Content/Logical/       LDB evaluation and normalized scan layers
+│   │   ├── Detection/             Magic-byte detection and scan-type policy
+│   │   ├── Engine/                Scanner orchestration and pipeline stages
+│   │   ├── Executable/            Executable metadata and version parsing
+│   │   ├── Hosting/               Admission, concurrency, health and metrics
+│   │   ├── Image/                 Icon/image decoding and fuzzy matching
+│   │   ├── Pe/                    PE-specific matching and overlay scan
+│   │   └── Specialized/             Type-specific scan handlers
+│   ├── ClamGuard.Signatures/      Signature models, parsing, patterns and matchers
+│   │   ├── Matching/              Fixed-pattern indexes and logical prefilter
+│   │   ├── Models/                Strongly typed signature definitions
+│   │   ├── Parsing/               Parsers grouped by signature family
+│   │   └── Patterns/              Hex-pattern atoms and matching logic
+│   └── ClamGuard.Yara/            Managed YARA-compatible subset
+├── tests/ClamGuard.Tests/         Executable regression harness and fixtures
+├── samples/                       Tiny non-production parser/matcher fixtures
+├── scripts/                       Repository verification helpers
+├── Directory.Build.props           Shared compiler and build settings
+├── global.json                    .NET SDK selection
+└── README.md
+```
 
-## Safety model
+## Database loading and memory usage
 
-Database files and scanned files are treated as untrusted input. Parsers apply bounded reads, recursion limits and explicit validation. Database replacement uses a temporary file and atomic move where the platform permits it.
+ClamGuard.NET expands supported database containers to its configured cache or a temporary directory, parses supported entries into managed signature objects, and then builds in-memory matching indexes. The compressed size of a `.cvd` file is therefore **not** a reliable estimate of the resident memory needed by the scanner: parsed pattern atoms, signature models, hash buckets, matcher states, logical-signature indexes, and container-specific data add overhead.
 
-## Iteration-46 — Full database loader coverage
+The fixed-pattern matcher uses sparse transitions and shared integer-indexed edge/output tables rather than one `Dictionary<byte, int>` and one `List<int>` per automaton state. Exact-byte-only patterns are stored as byte arrays rather than one object per byte, and immutable exact-byte atoms are shared from a 256-value cache for patterns that need the polymorphic atom representation. Fixed-pattern checks use a direct byte comparison instead of allocating backtracking stacks and visited sets. The compiled matcher also separates fixed and flexible patterns, uses list-based pattern IDs, and avoids creating a temporary `ContentSignature` wrapper for every flexible NDB rule on every stream chunk. Original signature lines are retained only while `.ign`/`.ign2` rules are evaluated during loading, then cleared from retained signature objects; unused source-line copies are not kept in specialized metadata records. These choices reduce avoidable managed allocations; they do not eliminate the inherent memory cost of retaining parsed databases and their indexes.
 
-Compared against the ClamAV 1.5.4 `libclamav/readdb.c`, `dconf.c`, and `openioc.c` dispatch/loaders and the official ClamAV signature-format documentation.
+ClamGuard.NET does not force a blocking, compacting full-generation garbage collection after loading. Such a pause is not a substitute for reducing retained data structures; the runtime collects temporary parsing objects according to normal GC policy. ClamAV's native engine and ClamGuard.NET use different implementations and data layouts, so their memory use should be measured rather than assumed equal. Also distinguish the two official scanning modes: `clamscan` creates an engine and loads the database for each invocation, while `clamdscan` is a client that submits work to a running `clamd` daemon whose engine and database stay resident. Compare process memory on equivalent workloads and include the daemon process when evaluating `clamdscan`.
 
-- Added dedicated loaders for `.ftm`, `.cfg`, `.wdb/.pdb/.gdb`, `.pwdb`, `.crb`, `.cat`, `.ioc`, `.yar/.yara`, `.cbc`, and `.info`.
-- FTM mode 1 keeps the content-pattern/offset expression intact; modes 0 and 4 use decoded fixed magic.
-- FTM now validates both real and target type codes against the ClamAV 1.5.4 file-type set.
-- DCONF stores module bitmasks and functionality-level filters.
-- WDB/PDB/GDB expressions are preserved without converting PCRE to .NET regex.
-- PWDB supports ANY/ZIP/RAR containers and cleartext/hex storage types.
-- CRB validates trust/subject/serial/signing flags and functionality-level ranges.
-- OpenIOC extracts supported MD5/SHA-1/SHA-256 whole-file hashes with bounded XML parsing.
-- YARA and ClamBC files are now actually parsed by the project compatibility engines during DB loading, not silently treated as opaque resources.
-- INFO records are parsed using the native `name;size;sha256` record shape.
-- Database directory load order now follows ClamAV priority: `.ign/.ign2` → `daily.cld` → `daily.cvd` → `local.gdb` → `daily.cfg` → `.crb` → normal databases.
-- CAT remains intentionally structural in this iteration; native catalog certificate extraction is still pending.
+Useful upstream references:
 
-The environment used for packaging still has no .NET SDK, so `dotnet build` / `dotnet test` cannot be executed here. A static brace/structure pass and source-level regression checks were completed.
+- [ClamAV scanning documentation](https://docs.clamav.net/manual/Usage/Scanning.html)
+- [ClamAV 1.5.4 Aho–Corasick matcher source](https://fossies.org/linux/clamav/libclamav/matcher-ac.c)
+- [ClamAV official source repository](https://github.com/Cisco-Talos/clamav)
 
-## Verification
+No memory or throughput benchmark is claimed by this repository unless a benchmark result, test environment, database version, and measurement method are explicitly provided. For a meaningful comparison, record peak and steady-state working set/private bytes while loading the same database, then scan the same clean and matching samples using equivalent scan settings.
 
-A static verification pass is included in `CHECK-REPORT.md`. The current environment does not contain the .NET SDK, so runtime compilation could not be executed during packaging.
+## Compatibility and safety boundaries
 
-## Iteration-47 — Scan pipeline and file-type optimization
+- The implementation targets the formats and scanner behaviors covered by its parsers and regression tests. It does not claim feature-for-feature parity with every native ClamAV signature, unpacker, YARA feature, ClamBC API, or specialized document parser.
+- The YARA engine implements a managed compatibility subset; advanced modules/imports and language features outside that subset are not guaranteed.
+- Native-only bytecode integrations, platform-specific JIT behavior, and decoders that are not available as safe managed components are not assumed to work.
+- Archive recursion, expanded data, file counts, and specialized parsing are bounded. A scan can return an error or skip a specialized path when configured limits are exceeded.
+- File-type recognition is a scanning hint, not proof that a file is valid or safe. Detection still depends on applicable signatures and supported scan logic.
+- This project is not a kernel filesystem filter and is not a replacement for the operating system's built-in protection or a security review of a production deployment.
 
-Compared against ClamAV 1.5.4 `libclamav/filetypes.c`, `matcher.c`, `matcher-ac.c`, and `scanners.c`, plus the official ClamAV File Type Magic and File Types documentation.
+## License and third-party notices
 
-- Root file typing now uses the native 1028-byte magic-buffer scale with targeted probes for ISO/UDF/DMG markers outside the initial window.
-- FTM mode-0 direct matching and mode-1 re-typing follow the native distinction; later loaded FTM definitions retain precedence.
-- Specialized graphics types (`GIF`, `PNG`, `JPEG`, `TIFF`) are preserved, and NDB target 5 matches their ClamAV graphics family.
-- Non-PE layers no longer pay PE section/import hash costs merely because PE databases are loaded.
-- Regular files stay on the memory-mapped streaming raw path; PE section hash databases use section-by-section reads.
-- Container/document layers use parser-first ordering and reuse the same materialized bytes for subsequent raw/signature passes where necessary.
-- FTM-selected handler types are propagated into archive dispatch, so dynamic file typing cannot be lost to a second byte-only detector.
-- Nested containers use the same type-aware parser/raw ordering.
+ClamGuard.NET source code is distributed under the MIT License; see [`LICENSE`](LICENSE). ClamGuard.NET is an independently written managed implementation that uses public format documentation and observed behavior. It is not a wrapper intended to relicense or bypass the license of the ClamAV C/C++ source. Review the license and distribution terms of any database, signature set, decoder, or external tool you use.
 
-The implementation is an orchestration/performance alignment. It does not claim native parity for every specialized ClamAV parser or unpacker; see `docs/scan/clamav-1.5.4-scan-pipeline.md` for the explicit remaining gaps.
+### SharpCompress 0.50.4
 
-## Iteration-48 — Native specialized handlers
+ClamGuard.Scanner uses [SharpCompress](https://github.com/adamhathcock/sharpcompress) for selected archive operations.
 
-Compared against ClamAV 1.5.4 `scanners.c`, `hwp.c`, `hwp.h`, `ole2_extract.c`, and `htmlnorm.c`, plus official ClamAV documentation.
+License: MIT  
+Copyright: (c) 2025 Adam Hathcock
 
-- HWP3 is now a pre-raw specialized layer: header validation, password gating, optional info-block bounds, raw-DEFLATE body extraction, and child-layer rescan.
-- `HWPOLE2` now strips its four-byte size prefix and rescans the embedded OLE2 payload.
-- OLE2 detects HWP5 `fileheader` streams and applies HWP5 compression/password behavior to the native content-stream names.
-- HTML/HTML_UTF16 specialized scanning now runs before the raw layer and emits bounded nocomment, notags, and JavaScript-derived scan layers.
-- Added ClamAV-aligned HTML/script normalization limits: 40 MiB / 8 MiB / 20 MiB.
-- Specialized handlers are applied to root files, in-memory rescans, and embedded archive children.
+```text
+MIT License
 
-The implementation is intentionally scoped: it does not claim full native equivalence for ClamAV's JavaScript token normalizer, JScript/VBScript.encode decoder, full HTML DOM/data-URI/CSS handling, or every HWP3/OLE2 macro/image parser path.
+Copyright (c) 2025 Adam Hathcock
 
-## Iteration-49 — Native specialized document/container layers
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
 
-Compared against ClamAV 1.5.4 `libclamav/scanners.c`, `hwp.c`, `xdp.c`, `msxml_parser.c`, and the native Rust OneNote scanner in `libclamav_rust/src/onenote.rs`, plus official ClamAV File Types documentation.
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
 
-- OneNote files now have a dedicated pre-raw extraction path using the 16-byte OneStore signature and the documented `FileDataStoreObject` fallback format; extracted attachment payloads are rescanned as child layers under the normal scanner.
-- XDP files now parse XML safely, decode `<chunk>` Base64 content, apply the native `%PDF-` marker gate within the 1028-byte magic window, and rescan matching PDF payloads.
-- HWPML (`XML_HWP`) now walks `bindata`, `scriptheader`, and `scriptsource` elements, honoring `Encoding=Base64` and `Compress=true` before rescanning the resulting binary/script layer.
-- Specialized pre-raw handlers are kept separate from the generic archive dispatcher, preserving ClamAV's explicit type-based parser dispatch.
-- Malformed OneNote/XDP/HWPML specialized parsing remains non-fatal to the normal raw layer.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
 
-The OneNote implementation covers the fallback extraction method present in ClamAV's native scanner. Full support for the external `onenote.rs` parser's complete modern OneStore object model is not claimed. Full OLE2 VBA/XLM reconstruction and the complete native JavaScript token normalizer remain separate gaps.
-
-## Release 1.1.0 — High-Performance SIMD Scanner & WPF Desktop Antivirus
-
-Compared against ClamAV 1.5.4 C/C++ engine behavior and high-throughput scanning requirements:
-
-- **Hardware-Accelerated Pattern Search (SIMD/AVX2)**:
-  - Fixed-byte pattern searches now leverage .NET 8's vectorized `ReadOnlySpan<byte>.IndexOf` implementation (SSE/AVX2), replacing single-byte backtracking loops with 30x+ faster SIMD throughput.
-- **Short-Circuit Evaluation for Logical Signatures**:
-  - Pure-`AND` expressions (`0&1&2&3&4`) in `.ldb` rules now early-exit as soon as any mandatory subsignature has zero matches, eliminating redundant scans over large binaries.
-- **Pre-Filtering for Target Architectures**:
-  - Signatures targeting specific binaries (e.g., `Target: 1` for PE executables) and size boundaries (`MinFileSize`, `MaxFileSize`) are pre-filtered prior to logical subexpression evaluation.
-- **WPF Desktop UI & Engine Optimization**:
-  - Full background scanning asynchronously offloaded from the UI thread with progress update throttling to prevent Dispatcher freezes.
-  - Unlimited scan duration mode (timeout set to infinite) while preserving strict memory and maximum file size safety thresholds.
-  - Parallel multi-threaded directory traversal using `Parallel.ForEachAsync`.
-
+The upstream SharpCompress package also includes attribution/license notices for incorporated or derived components, including Bouncy Castle, managed-lzma, XZ.NET, and ZstdSharp. Consult the upstream package's current notices before redistributing binaries.

@@ -1,68 +1,129 @@
 namespace ClamGuard.Signatures.Matching;
 
+/// <summary>
+/// Sparse Aho-Corasick matcher for fixed byte patterns.
+/// Transitions and output links use compact integer-indexed arrays/lists instead
+/// of allocating a Dictionary and List for every trie node. This matters when
+/// loading large ClamAV databases with hundreds of thousands of fixed patterns.
+/// </summary>
 public sealed class AhoCorasickMatcher
 {
-    private sealed class Node
+    private struct Node
     {
-        public Dictionary<byte, int> Next { get; } = new();
-        public int Fail { get; set; }
-        public List<int> Outputs { get; } = new();
+        public int FirstEdge;
+        public int Fail;
+        public int FirstOutput;
+        public int LastOutput;
+        public int OutputLink;
+
+        public Node()
+        {
+            FirstEdge = -1;
+            Fail = 0;
+            FirstOutput = -1;
+            LastOutput = -1;
+            OutputLink = -1;
+        }
+    }
+
+    private readonly record struct Edge(byte Value, int Target, int Next);
+
+    private struct OutputEntry
+    {
+        public int PatternId;
+        public int Next;
+
+        public OutputEntry(int patternId, int next)
+        {
+            PatternId = patternId;
+            Next = next;
+        }
     }
 
     private readonly List<Node> _nodes = [new Node()];
-    private readonly HashSet<int> _patternIds = [];
+    private readonly List<Edge> _edges = [];
+    private readonly List<OutputEntry> _outputs = [];
+    private readonly int[] _rootTransitions = CreateRootTransitions();
     private bool _built;
 
     public int StateCount => _nodes.Count;
 
     public void Add(ReadOnlySpan<byte> pattern, int id)
     {
-        if (_built) throw new InvalidOperationException("Cannot add patterns after Build().");
-        if (pattern.IsEmpty) throw new ArgumentException("Pattern cannot be empty.", nameof(pattern));
+        if (_built)
+            throw new InvalidOperationException("Cannot add patterns after Build().");
+        if (pattern.IsEmpty)
+            throw new ArgumentException("Pattern cannot be empty.", nameof(pattern));
 
         var state = 0;
-        foreach (var b in pattern)
+        foreach (var value in pattern)
         {
-            if (!_nodes[state].Next.TryGetValue(b, out var next))
+            var next = FindTransition(state, value);
+            if (next < 0)
             {
                 next = _nodes.Count;
-                _nodes[state].Next[b] = next;
                 _nodes.Add(new Node());
+
+                var node = _nodes[state];
+                _edges.Add(new Edge(value, next, node.FirstEdge));
+                node.FirstEdge = _edges.Count - 1;
+                _nodes[state] = node;
+
+                if (state == 0)
+                    _rootTransitions[value] = next;
             }
+
             state = next;
         }
-        _nodes[state].Outputs.Add(id);
-        _patternIds.Add(id);
+
+        AddOutput(state, id);
     }
 
     public void Build()
     {
-        if (_built) return;
+        if (_built)
+            return;
 
-        var q = new Queue<int>();
-        foreach (var child in _nodes[0].Next.Values)
+        var queue = new Queue<int>();
+        var root = _nodes[0];
+        for (var edgeIndex = root.FirstEdge; edgeIndex >= 0; edgeIndex = _edges[edgeIndex].Next)
         {
-            _nodes[child].Fail = 0;
-            q.Enqueue(child);
+            var childIndex = _edges[edgeIndex].Target;
+            var child = _nodes[childIndex];
+            child.Fail = 0;
+            child.OutputLink = -1;
+            _nodes[childIndex] = child;
+            queue.Enqueue(childIndex);
         }
 
-        while (q.Count > 0)
+        while (queue.Count > 0)
         {
-            var current = q.Dequeue();
-            foreach (var (b, child) in _nodes[current].Next)
+            var currentIndex = queue.Dequeue();
+            var current = _nodes[currentIndex];
+
+            for (var edgeIndex = current.FirstEdge; edgeIndex >= 0; edgeIndex = _edges[edgeIndex].Next)
             {
-                q.Enqueue(child);
-                var fail = _nodes[current].Fail;
-                while (fail != 0 && !_nodes[fail].Next.ContainsKey(b))
-                    fail = _nodes[fail].Fail;
+                var edge = _edges[edgeIndex];
+                queue.Enqueue(edge.Target);
 
-                if (_nodes[fail].Next.TryGetValue(b, out var fallback) && fallback != child)
-                    _nodes[child].Fail = fallback;
-                else
-                    _nodes[child].Fail = 0;
+                var failureState = current.Fail;
+                var fallback = FindTransition(failureState, edge.Value);
+                while (failureState != 0 && fallback < 0)
+                {
+                    failureState = _nodes[failureState].Fail;
+                    fallback = FindTransition(failureState, edge.Value);
+                }
 
-                if (_nodes[_nodes[child].Fail].Outputs.Count != 0)
-                    _nodes[child].Outputs.AddRange(_nodes[_nodes[child].Fail].Outputs);
+                var childFailure = fallback >= 0 && fallback != edge.Target ? fallback : 0;
+                var child = _nodes[edge.Target];
+                child.Fail = childFailure;
+
+                var failureNode = _nodes[childFailure];
+                child.OutputLink = failureNode.FirstOutput >= 0
+                    ? childFailure
+                    : failureNode.OutputLink;
+
+                _nodes[edge.Target] = child;
             }
         }
 
@@ -70,33 +131,35 @@ public sealed class AhoCorasickMatcher
     }
 
     /// <summary>
-    /// Finds which pattern IDs occur at least once. Unlike <see cref="Scan"/>,
-    /// this does not retain every match offset, making it suitable for cheap
-    /// candidate filtering when the exact matcher validates each candidate later.
+    /// Finds pattern IDs which occur at least once without retaining match offsets.
+    /// Suitable for candidate filtering before a more specific matcher validates hits.
     /// </summary>
     public HashSet<int> FindMatchingIds(ReadOnlySpan<byte> data)
     {
         Build();
         var matched = new HashSet<int>();
-        if (data.IsEmpty || _patternIds.Count == 0)
+        if (data.IsEmpty || _nodes.Count == 1)
             return matched;
 
         var state = 0;
         for (var i = 0; i < data.Length; i++)
         {
-            var value = data[i];
-            while (state != 0 && !_nodes[state].Next.ContainsKey(value))
-                state = _nodes[state].Fail;
-            if (_nodes[state].Next.TryGetValue(value, out var next))
-                state = next;
+            state = Advance(state, data[i]);
+            var outputState = state;
 
-            foreach (var id in _nodes[state].Outputs)
+            while (outputState >= 0)
             {
-                matched.Add(id);
-                if (matched.Count == _patternIds.Count)
-                    return matched;
+                for (var outputIndex = _nodes[outputState].FirstOutput;
+                     outputIndex >= 0;
+                     outputIndex = _outputs[outputIndex].Next)
+                {
+                    matched.Add(_outputs[outputIndex].PatternId);
+                }
+
+                outputState = _nodes[outputState].OutputLink;
             }
         }
+
         return matched;
     }
 
@@ -109,14 +172,77 @@ public sealed class AhoCorasickMatcher
 
         for (var i = 0; i < data.Length; i++)
         {
-            var b = data[i];
-            while (state != 0 && !_nodes[state].Next.ContainsKey(b))
-                state = _nodes[state].Fail;
-            if (_nodes[state].Next.TryGetValue(b, out var next))
-                state = next;
+            state = Advance(state, data[i]);
+            var outputState = state;
 
-            foreach (var id in _nodes[state].Outputs)
-                matches.Add((id, baseOffset + i));
+            while (outputState >= 0)
+            {
+                for (var outputIndex = _nodes[outputState].FirstOutput;
+                     outputIndex >= 0;
+                     outputIndex = _outputs[outputIndex].Next)
+                {
+                    matches.Add((_outputs[outputIndex].PatternId, baseOffset + i));
+                }
+
+                outputState = _nodes[outputState].OutputLink;
+            }
         }
+    }
+
+    private int Advance(int state, byte value)
+    {
+        var next = FindTransition(state, value);
+        while (state != 0 && next < 0)
+        {
+            state = _nodes[state].Fail;
+            next = FindTransition(state, value);
+        }
+
+        return next >= 0 ? next : 0;
+    }
+
+    private int FindTransition(int state, byte value)
+    {
+        if (state == 0)
+            return _rootTransitions[value];
+
+        for (var edgeIndex = _nodes[state].FirstEdge;
+             edgeIndex >= 0;
+             edgeIndex = _edges[edgeIndex].Next)
+        {
+            var edge = _edges[edgeIndex];
+            if (edge.Value == value)
+                return edge.Target;
+        }
+
+        return -1;
+    }
+
+    private void AddOutput(int state, int id)
+    {
+        var node = _nodes[state];
+        var outputIndex = _outputs.Count;
+        _outputs.Add(new OutputEntry(id, -1));
+
+        if (node.FirstOutput < 0)
+        {
+            node.FirstOutput = outputIndex;
+        }
+        else
+        {
+            var lastOutput = _outputs[node.LastOutput];
+            lastOutput.Next = outputIndex;
+            _outputs[node.LastOutput] = lastOutput;
+        }
+
+        node.LastOutput = outputIndex;
+        _nodes[state] = node;
+    }
+
+    private static int[] CreateRootTransitions()
+    {
+        var transitions = new int[byte.MaxValue + 1];
+        Array.Fill(transitions, -1);
+        return transitions;
     }
 }

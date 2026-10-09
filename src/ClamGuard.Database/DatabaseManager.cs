@@ -35,9 +35,6 @@ public sealed class DatabaseManager
         var next = new CompiledState(loaded.Database, compiled, generation);
         Volatile.Write(ref _state, next);
 
-        // Reclaim transient string parsing and intermediate object allocations from the loader
-        GC.Collect(2, GCCollectionMode.Aggressive, blocking: true, compacting: true);
-
         return next;
     }
 }
