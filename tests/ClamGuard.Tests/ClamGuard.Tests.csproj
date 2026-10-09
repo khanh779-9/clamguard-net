@@ -7,6 +7,5 @@
     <ProjectReference Include="..\..\src\ClamGuard.Scanner\ClamGuard.Scanner.csproj" />
     <ProjectReference Include="..\..\src\ClamGuard.Yara\ClamGuard.Yara.csproj" />
     <ProjectReference Include="..\..\src\ClamGuard.Bytecode\ClamGuard.Bytecode.csproj" />
-    <ProjectReference Include="..\..\src\ClamGuard.Production\ClamGuard.Production.csproj" />
   </ItemGroup>
 </Project>

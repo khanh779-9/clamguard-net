@@ -15,7 +15,7 @@ This document maps high-level responsibilities identified during analysis of Cla
 | Whole-file hashing | `CompiledSignatureSet.Match` |
 | Logical expression evaluation | `ScannerEngine` + `ExpressionEvaluator` |
 | Scanner orchestration | `ScannerEngine` |
-| Full database download | `ClamGuard.Update.DatabaseUpdater` |
+| Full database download | `ClamGuard.Database.Update.DatabaseUpdater` |
 | Database smoke validation | temporary extraction + `DatabaseLoader` |
 | Atomic activation | `DatabaseUpdater.AtomicReplace` |
 

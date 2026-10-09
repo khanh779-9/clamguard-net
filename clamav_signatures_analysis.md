@@ -97,11 +97,11 @@ DCONF cho phép thay đổi bật/tắt các tính năng cấu hình của ClamA
 Dựa trên việc kiểm tra thực tế thư mục `C:\ProgramData\ClamGuard\cache\daily_28146_f035c4fd10fd33f9fadd5905acb78b7e`, đây là nơi lưu trữ các tệp cơ sở dữ liệu đã được giải nén của bộ chữ ký ClamAV (có khả năng là phiên bản "daily" được tải về). 
 
 Danh sách các phần mở rộng và loại tệp thực tế được tìm thấy tương ứng với các tài liệu đã phân tích:
-*   **`.ldb` / `.ldu`**: Cơ sở dữ liệu chữ ký logic (Logical Signatures) và bản cập nhật của chúng (`.ldu` - logical database update). Tệp `daily.ldb` có kích thước rất lớn (~76MB), cho thấy phần lớn các quy tắc phức tạp được viết dưới dạng này.
-*   **`.ndb` / `.ndu`**: Cơ sở dữ liệu chữ ký mở rộng (Extended Signatures) dựa trên hex.
-*   **`.hdb` / `.hsb`**: Cơ sở dữ liệu chữ ký băm (MD5 và SHA1/SHA256). Tệp `daily.hsb` (~3.8MB) chiếm một lượng lớn.
-*   **`.mdb` / `.msb`**: Cơ sở dữ liệu băm của các PE section.
-*   **`.hdu` / `.hsu` / `.ndu` / `.mdu` / `.msu`**: Các tệp tin cập nhật (update) bổ sung tương ứng cho các định dạng CSDL gốc.
+*   **`.ldb` / `.ldu`**: Cơ sở dữ liệu chữ ký logic (Logical Signatures). `.ldb` chứa các luật logic thông thường; `.ldu` là họ CSDL chữ ký PUA tương ứng, không phải bản vá cập nhật gia tăng. Tệp `daily.ldb` có kích thước rất lớn (~76MB), cho thấy nhiều quy tắc phức tạp được viết dưới dạng này.
+*   **`.ndb` / `.ndu`**: Cơ sở dữ liệu chữ ký mở rộng dựa trên hex; `.ndu` thuộc họ chữ ký PUA.
+*   **`.hdb` / `.hsb`**: Cơ sở dữ liệu chữ ký hash của toàn bộ tệp (MD5/SHA-256 theo họ định dạng). Tệp `daily.hsb` (~3.8MB) chiếm một lượng lớn; `.hdu/.hsu` là họ PUA tương ứng.
+*   **`.mdb` / `.msb`**: Cơ sở dữ liệu hash của các PE section; `.mdu/.msu` là họ PUA tương ứng.
+*   **`.hdu` / `.hsu` / `.ndu` / `.ldu` / `.mdu` / `.msu`**: Các tệp cơ sở dữ liệu chữ ký PUA (Potentially Unwanted Applications). Không được xem các hậu tố `-u` này là bản cập nhật gia tăng chung; luồng cập nhật CVD/CDIFF nằm ở `.cvd/.cld/.cud` và thư mục `ClamGuard.Database/Update/`.
 *   **`.cdb`**: Chữ ký dựa trên Container Metadata.
 *   **`.cfg`**: Tệp cấu hình động (Dynamic Configuration).
 *   **`.crb`**: Cơ sở dữ liệu chứng chỉ tin cậy/bị thu hồi (Trusted/Revoked Certificates).

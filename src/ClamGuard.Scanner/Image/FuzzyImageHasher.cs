@@ -1,10 +1,5 @@
 namespace ClamGuard.Scanner;
 
-internal sealed record RgbImage(int Width, int Height, byte[] Pixels)
-{
-    public int Index(int x, int y) => (y * Width + x) * 3;
-}
-
 internal static class ImageFuzzyHasher
 {
     public static byte[] Compute(RgbImage source)

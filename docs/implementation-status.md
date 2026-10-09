@@ -69,7 +69,7 @@
 - PE packer/unpacker modules, Authenticode/iShield parsing, and complete PE ordinal export-name parity remain separate compatibility tracks.
 - Some deep archive/document semantics and specialized filesystem parsers remain outside the managed decoder set; guarded external routing is used where configured.
 - Less-common auxiliary database extension semantics and phishing/trust/certificate/icon/password datasets remain separate compatibility tracks.
-- Environment-specific fuzzing, throughput benchmarking, service integration, and deployment acceptance are still operational validation activities even though the production runtime supplies bounded execution, health gates, metrics, lifecycle management, CI configuration, and regression tooling.
+- Environment-specific fuzzing, throughput benchmarking, service integration, and deployment acceptance are still operational validation activities even though the scan host supplies bounded execution, health gates, metrics, and lifecycle management; CI configuration and regression tooling support validation.
 
 The project deliberately distinguishes the implemented LDB/NDB execution surface from features that still require dedicated parsers or engines.
 

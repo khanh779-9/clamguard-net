@@ -1,4 +1,3 @@
-a các
 
 # TÀI LIỆU CHI TIẾT VỀ CƠ SỞ DỮ LIỆU CHỮ KÝ CLAMAV VÀ KIẾN TRÚC CLAMGUARD
 
@@ -293,5 +292,14 @@ sequenceDiagram
    - Với các signature có cấu trúc `0 & 1 & 2 & 3 & 4`: Khi quét `Subsig0` không tìm thấy trong file, engine **ngắt ngay lập tức**, không tốn CPU quét các `Subsig1..4` còn lại.
 4. **Tách biệt module Clean Architecture**:
 
-   - Thư mục `ClamGuard.Signatures/Parsing/`: Chia rõ ràng theo từng loại chữ ký (`Ldb/`, `Ndb/`, `Hash/`, `Container/`, `Common/`).
-   - Thư mục `ClamGuard.Scanner/Image/`: Tách riêng các thuật toán giải mã icon PE và tính toán ma trận màu (`IconDecoder.cs`, `IconMetrics.cs`, `ImageDecoder.cs`, `FuzzyImageHasher.cs`), giữ cho file runtime logic (`LdbRuntime.cs`) gọn gàng và ổn định.
+   - Thư mục `ClamGuard.Signatures/Parsing/`: Chia theo nhóm nội dung (`Content/Ldb`, `Content/Ndb`), hash, container, metadata và common; model/chữ ký chính nằm trong tệp riêng.
+   - Thư mục `ClamGuard.Scanner/Image/` và `ClamGuard.Scanner/Executable/`: tách xử lý icon/tài nguyên và metadata thực thi ra khỏi runtime LDB; `ScannerEngine` được chia theo luồng scan, nội dung/logic, chuẩn hóa và nhận diện loại file.
+
+
+## 4. Quy ước tổ chức source sau tinh gọn
+
+- `ClamGuard.Database/Update/` chứa cập nhật CVD/CDIFF vì đây là một phần của vòng đời cơ sở dữ liệu, không phải project độc lập.
+- `ClamGuard.Scanner/Hosting/` chứa scan host, giới hạn hàng đợi, timeout, health và metrics; lớp này dùng trực tiếp engine nên không cần project `ClamGuard.Production`.
+- `ClamGuard.Scanner/Containers/` chia xử lý container theo file partial `ArchiveScanner.cs`, `ArchiveScanner.Formats.cs` và `ArchiveScanner.Helpers.cs`; ngân sách archive là model riêng.
+- `ClamGuard.Signatures/` dùng các nhóm `Models/`, `Patterns/`, `Matching/`, `Parsing/Content`, `Parsing/Hash`, `Parsing/Container`, `Parsing/Metadata`, `Parsing/Common`. Các đuôi file thuộc cùng họ dùng parser chung thay vì tạo một project hay lớp cấp cao cho mỗi extension.
+- CLI độc lập đã được bỏ khỏi solution; ứng dụng WPF và test harness vẫn là entrypoint có sẵn.

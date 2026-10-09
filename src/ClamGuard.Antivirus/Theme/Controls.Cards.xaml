@@ -1,0 +1,89 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:local="clr-namespace:ClamGuard.Antivirus.Converters">
+
+    <Style x:Key="Style.Card" TargetType="Border">
+        <Setter Property="Background" Value="{DynamicResource Brush.SurfaceElevated}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource Brush.Border}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="CornerRadius" Value="10" />
+        <Setter Property="Padding" Value="18" />
+        <Setter Property="Effect" Value="{DynamicResource Effect.CardShadow}" />
+    </Style>
+
+    <Style x:Key="Style.CardQuiet" TargetType="Border" BasedOn="{StaticResource Style.Card}">
+        <Setter Property="Background" Value="{DynamicResource Brush.SurfaceSubtle}" />
+        <Setter Property="Effect" Value="{x:Null}" />
+    </Style>
+
+    <Style x:Key="Style.CardEmphasis" TargetType="Border" BasedOn="{StaticResource Style.Card}">
+        <Setter Property="BorderBrush" Value="{DynamicResource Brush.Border}" />
+        <Setter Property="Background" Value="{DynamicResource Brush.Surface}" />
+        <Style.Triggers>
+            <DataTrigger Binding="{Binding DatabaseReady}" Value="False">
+                <Setter Property="BorderBrush" Value="{DynamicResource Brush.DangerBorder}" />
+                <Setter Property="Background" Value="{DynamicResource Brush.SurfaceTint}" />
+            </DataTrigger>
+            <DataTrigger Binding="{Binding DatabaseReady}" Value="True">
+                <Setter Property="BorderBrush" Value="{DynamicResource Brush.SuccessBorder}" />
+                <Setter Property="Background" Value="{DynamicResource Brush.Surface}" />
+            </DataTrigger>
+        </Style.Triggers>
+    </Style>
+
+    <Style x:Key="Style.IconTile" TargetType="Border">
+        <Setter Property="Width" Value="44" />
+        <Setter Property="Height" Value="44" />
+        <Setter Property="CornerRadius" Value="10" />
+        <Setter Property="Background" Value="{DynamicResource Brush.PrimarySoft}" />
+        <Setter Property="VerticalAlignment" Value="Top" />
+    </Style>
+
+    <Style x:Key="Style.StatusBadge" TargetType="Border">
+        <Setter Property="Background" Value="{DynamicResource Brush.SuccessSoft}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource Brush.SuccessBorder}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="CornerRadius" Value="4" />
+        <Setter Property="Padding" Value="9,5" />
+    </Style>
+
+    <Style x:Key="Style.SectionLabel" TargetType="TextBlock">
+        <Setter Property="FontSize" Value="9" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="Foreground" Value="{DynamicResource Brush.TextMuted}" />
+        <Setter Property="TextWrapping" Value="Wrap" />
+    </Style>
+
+    <Style x:Key="Style.CardTitle" TargetType="TextBlock">
+        <Setter Property="FontSize" Value="14" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="Foreground" Value="{DynamicResource Brush.TextPrimary}" />
+        <Setter Property="TextWrapping" Value="Wrap" />
+    </Style>
+
+    <Style x:Key="Style.BodyText" TargetType="TextBlock">
+        <Setter Property="FontSize" Value="11" />
+        <Setter Property="Foreground" Value="{DynamicResource Brush.TextSecondary}" />
+        <Setter Property="TextWrapping" Value="Wrap" />
+    </Style>
+
+    <Style x:Key="Style.MutedText" TargetType="TextBlock">
+        <Setter Property="FontSize" Value="10.5" />
+        <Setter Property="Foreground" Value="{DynamicResource Brush.TextMuted}" />
+        <Setter Property="TextWrapping" Value="Wrap" />
+    </Style>
+
+    <Style x:Key="Style.MetricValue" TargetType="TextBlock">
+        <Setter Property="Margin" Value="0,4,0,0" />
+        <Setter Property="FontSize" Value="20" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="Foreground" Value="{DynamicResource Brush.TextPrimary}" />
+        <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+    </Style>
+
+    <Style x:Key="Style.MetricLabel" TargetType="TextBlock">
+        <Setter Property="FontSize" Value="9.5" />
+        <Setter Property="Foreground" Value="{DynamicResource Brush.TextMuted}" />
+        <Setter Property="TextWrapping" Value="Wrap" />
+    </Style>
+</ResourceDictionary>

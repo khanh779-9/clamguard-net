@@ -5,11 +5,12 @@
     <Application.Resources>
         <ResourceDictionary>
             <ResourceDictionary.MergedDictionaries>
+                <!-- Converters must be loaded before any dictionaries that reference them -->
+                <ResourceDictionary Source="Converters/Resources.xaml" />
                 <ResourceDictionary Source="Theme/LightTheme.xaml" />
                 <ResourceDictionary Source="Theme/Icons.xaml" />
                 <ResourceDictionary Source="Theme/Controls.xaml" />
                 <ResourceDictionary Source="Controls/ClamGuardWindow.xaml" />
-                <ResourceDictionary Source="Converters/Resources.xaml" />
             </ResourceDictionary.MergedDictionaries>
         </ResourceDictionary>
     </Application.Resources>

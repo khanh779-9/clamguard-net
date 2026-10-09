@@ -15,8 +15,6 @@
     <ProjectReference Include="..\ClamGuard.Core\ClamGuard.Core.csproj" />
     <ProjectReference Include="..\ClamGuard.Database\ClamGuard.Database.csproj" />
     <ProjectReference Include="..\ClamGuard.Scanner\ClamGuard.Scanner.csproj" />
-    <ProjectReference Include="..\ClamGuard.Update\ClamGuard.Update.csproj" />
-    <ProjectReference Include="..\ClamGuard.Production\ClamGuard.Production.csproj" />
   </ItemGroup>
 
   <ItemGroup>

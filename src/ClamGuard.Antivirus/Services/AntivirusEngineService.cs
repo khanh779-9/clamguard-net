@@ -1,9 +1,9 @@
 using ClamGuard.Antivirus.Models;
 using ClamGuard.Core;
 using ClamGuard.Database;
-using ClamGuard.Production;
+using ClamGuard.Scanner.Hosting;
 using ClamGuard.Scanner;
-using ClamGuard.Update;
+using ClamGuard.Database.Update;
 using System.Collections.Concurrent;
 using System.IO;
 
@@ -13,17 +13,17 @@ public sealed class AntivirusEngineService : IAsyncDisposable
 {
     private readonly DatabaseManager _databaseManager = new();
     private readonly ScannerEngine _scanner;
-    private readonly ProductionScanHost _host;
+    private readonly ScanHost _host;
     private readonly DatabaseUpdater _updater;
     private int _initialized;
 
     public AntivirusEngineService()
     {
         _scanner = new ScannerEngine(_databaseManager);
-        _host = new ProductionScanHost(
+        _host = new ScanHost(
             _databaseManager,
             _scanner,
-            new ProductionScanOptions
+            new ScanHostOptions
             {
                 MaxConcurrentScans = Math.Max(1, Environment.ProcessorCount),
                 MaxQueuedScans = 10_000,
@@ -43,7 +43,7 @@ public sealed class AntivirusEngineService : IAsyncDisposable
     public string DatabaseDirectory => App.Settings.DatabaseDirectory;
     public string YaraDirectory => AppPaths.YaraDirectory;
     public string BytecodeDirectory => AppPaths.BytecodeDirectory;
-    public ProductionHealthStatus Health => _host.GetHealth();
+    public ScanHostHealthStatus Health => _host.GetHealth();
     public ScanMetricsSnapshot Metrics => _host.GetMetrics();
     public DatabaseInfo? CurrentDatabase => _databaseManager.Current.Database.Databases.FirstOrDefault();
 

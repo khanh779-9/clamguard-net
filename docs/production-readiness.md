@@ -1,6 +1,6 @@
 # Production Readiness
 
-ClamGuard.NET exposes `ClamGuard.Production.ProductionScanHost` as the deployment facade.
+ClamGuard.NET exposes `ClamGuard.Scanner.Hosting.ScanHost` as the deployment facade.
 
 ## Runtime hardening
 

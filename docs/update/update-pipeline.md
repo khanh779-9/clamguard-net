@@ -29,4 +29,4 @@ atomic replace
 Updated
 ```
 
-Incremental CDIFF is implemented by `CdiffPatchApplier` behind `IIncrementalPatchApplier`. Internal ClamAV radix-64 SHA-256 PSS2 signatures are verified before application, and optional `.cdiff.sign` CMS/PKCS#7 verification is available when a certificate directory is configured.
+Incremental CDIFF is implemented by `CdiffPatchApplier`, called by `DatabaseUpdater` from `ClamGuard.Database/Update`. Internal ClamAV radix-64 SHA-256 PSS2 signatures are verified before application, and optional `.cdiff.sign` CMS/PKCS#7 verification is available when a certificate directory is configured.

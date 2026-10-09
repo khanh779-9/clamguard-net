@@ -10,6 +10,7 @@ public sealed class AhoCorasickMatcher
     }
 
     private readonly List<Node> _nodes = [new Node()];
+    private readonly HashSet<int> _patternIds = [];
     private bool _built;
 
     public int StateCount => _nodes.Count;
@@ -31,6 +32,7 @@ public sealed class AhoCorasickMatcher
             state = next;
         }
         _nodes[state].Outputs.Add(id);
+        _patternIds.Add(id);
     }
 
     public void Build()
@@ -68,10 +70,36 @@ public sealed class AhoCorasickMatcher
     }
 
     /// <summary>
-    /// Scan without iterator/yield state. ReadOnlySpan&lt;byte&gt; is a ref struct, so
-    /// returning an explicit caller-owned result buffer avoids iterator/lambda
-    /// restrictions and keeps the hot path predictable.
+    /// Finds which pattern IDs occur at least once. Unlike <see cref="Scan"/>,
+    /// this does not retain every match offset, making it suitable for cheap
+    /// candidate filtering when the exact matcher validates each candidate later.
     /// </summary>
+    public HashSet<int> FindMatchingIds(ReadOnlySpan<byte> data)
+    {
+        Build();
+        var matched = new HashSet<int>();
+        if (data.IsEmpty || _patternIds.Count == 0)
+            return matched;
+
+        var state = 0;
+        for (var i = 0; i < data.Length; i++)
+        {
+            var value = data[i];
+            while (state != 0 && !_nodes[state].Next.ContainsKey(value))
+                state = _nodes[state].Fail;
+            if (_nodes[state].Next.TryGetValue(value, out var next))
+                state = next;
+
+            foreach (var id in _nodes[state].Outputs)
+            {
+                matched.Add(id);
+                if (matched.Count == _patternIds.Count)
+                    return matched;
+            }
+        }
+        return matched;
+    }
+
     public void Scan(ReadOnlySpan<byte> data, ref int state, long baseOffset, List<(int Id, long EndOffset)> matches)
     {
         ArgumentNullException.ThrowIfNull(matches);

@@ -1,0 +1,20 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:local="clr-namespace:ClamGuard.Antivirus.Converters">
+
+    <local:InverseBoolConverter x:Key="InverseBoolConverter" />
+
+    <local:BoolTextConverter x:Key="BoolTextConverter" />
+
+    <local:ReadyTextConverter x:Key="ReadyTextConverter" />
+
+    <local:ReadyBrushConverter x:Key="ReadyBrushConverter" />
+
+    <local:ReadySoftBrushConverter x:Key="ReadySoftBrushConverter" />
+
+    <local:VerdictBrushConverter x:Key="VerdictBrushConverter" />
+
+    <local:VerdictTextConverter x:Key="VerdictTextConverter" />
+
+    <local:NavIconConverter x:Key="NavIconConverter" />
+</ResourceDictionary>

@@ -16,6 +16,7 @@ public sealed class CompiledSignatureSet
     private readonly List<ContentSignature> _content = [];
     private readonly List<NdbSignature> _ndb = [];
     private readonly List<LogicalSignature> _logical = [];
+    private readonly LogicalSignaturePrefilter _logicalPrefilter = new();
     private readonly List<MetadataSignature> _metadata = [];
     private sealed class HashBucket
     {
@@ -120,6 +121,7 @@ public sealed class CompiledSignatureSet
                 break;
             case LogicalSignature logical:
                 _logical.Add(logical);
+                _logicalPrefilter.Add(logical);
                 break;
             case MetadataSignature metadata:
                 _metadata.Add(metadata);
@@ -149,6 +151,7 @@ public sealed class CompiledSignatureSet
         foreach (var (id, entry) in _acEntries.OrderBy(static x => x.Key))
             _ac.Add(entry.Pattern.ToFixedBytes(), id);
         _ac.Build();
+        _logicalPrefilter.Build();
 
         // Match a single long exact signature with the BM backend rather than
         // paying the AC state-machine cost. With multiple signatures, AC remains
@@ -166,6 +169,25 @@ public sealed class CompiledSignatureSet
         }
 
         _built = true;
+    }
+
+    /// <summary>
+    /// Returns indexed logical signatures whose fixed-byte anchor occurs in this
+    /// byte layer. Unsupported/normalized signatures are not returned and must
+    /// still be evaluated through the ordinary LDB path. This is not a verdict.
+    /// </summary>
+    public HashSet<LogicalSignature> FindLogicalCandidates(ReadOnlySpan<byte> data)
+    {
+        Build();
+        return _logicalPrefilter.FindCandidates(data);
+    }
+
+    /// <summary>Indicates whether a logical signature is safe to reject on an anchor miss.</summary>
+    public bool IsLogicalSignaturePrefiltered(LogicalSignature signature)
+    {
+        ArgumentNullException.ThrowIfNull(signature);
+        Build();
+        return _logicalPrefilter.IsIndexed(signature);
     }
 
     public IReadOnlyList<Detection> Match(ReadOnlySpan<byte> data, string databaseLabel, bool includeNdb = true, bool collectAllMatches = true)

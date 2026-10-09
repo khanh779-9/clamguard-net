@@ -51,19 +51,12 @@ This statement is not legal advice and it does not guarantee that every use, dat
 
 - .NET 8
 - C# 12
-- No external NuGet dependency is required by the core projects.
+- Core parsing/matching uses .NET base libraries; `ClamGuard.Scanner` references SharpCompress for managed archive support. Optional external decoders are resolved from `PATH`.
 
 ## Quick start
 
 ```bash
 dotnet build ClamGuard.Net.sln
-dotnet run --project src/ClamGuard.Cli -- db info path/to/daily.cvd
-dotnet run --project src/ClamGuard.Cli -- db verify path/to/daily.cvd [path/to/certs]
-dotnet run --project src/ClamGuard.Cli -- db cdiff path/to/daily-123.cdiff path/to/database-dir
-dotnet run --project src/ClamGuard.Cli -- db load path/to/database-dir
-dotnet run --project src/ClamGuard.Cli -- scan sample.exe --db path/to/database-dir
-dotnet run --project src/ClamGuard.Cli -- scan sample.exe --db path/to/database-dir --yara path/to/yara-rules
-dotnet run --project src/ClamGuard.Cli -- scan sample.exe --db path/to/database-dir --bytecode path/to/cbc-rules
 ```
 
 ## Project layout
@@ -72,13 +65,12 @@ dotnet run --project src/ClamGuard.Cli -- scan sample.exe --db path/to/database-
 - `ClamGuard.Signatures`: signature models, parsers and matchers
 - `ClamGuard.Database`: database discovery, loaders and CVD support
 - `ClamGuard.Scanner`: scan orchestration
-- `ClamGuard.Update`: remote CVD update workflow and verified CDIFF application
-- `ClamGuard.Cli`: command-line interface
+- `ClamGuard.Database/Update`: remote CVD update workflow and verified CDIFF application
 - `ClamGuard.Yara`: optional managed YARA engine and scanner adapter
 - `ClamGuard.Bytecode`: bounded managed ClamBC parser/interpreter, public API dispatcher, and scanner adapter
-- `ClamGuard.Production`: bounded admission/concurrency, timeouts, health gating, metrics and lifecycle management
+- `ClamGuard.Scanner/Hosting`: bounded admission/concurrency, timeouts, health gating, metrics and lifecycle management
 - `ClamGuard.Antivirus`: Windows WPF frontend for file/folder scanning, realtime monitoring, database updates, themes, toast notifications and custom dialogs
-- `ClamGuard.Tests`: unit tests for parsers, matchers, archive behavior and external-engine integration
+- `ClamGuard.Tests`: executable regression harness for parsers, matchers, archive behavior, scan-host lifecycle and engine integration
 
 ## Safety model
 
