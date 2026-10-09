@@ -147,6 +147,12 @@ public sealed partial class ScannerEngine
                 .Where(x => x.MacroGroup is null && LdbRuntime.TargetMatchesFileType(x.Target, signatureFileType))
                 .ToArray();
             var streamableNdb = applicableRawNdb.Where(x => ScanTypePolicy.CanStreamRawNdb(x, signatureFileType)).ToHashSet();
+            var fixedNdbCandidateRules = applicableRawNdb
+                .Where(x => !streamableNdb.Contains(x) &&
+                            x.Pattern.IsFixed &&
+                            !ScanTypePolicy.IsNormalizedTarget(x.Target))
+                .ToHashSet();
+            var matchedFixedNdbCandidates = new HashSet<NdbSignature>();
             // Only an applicable, non-streamable NDB rule can require the expensive
             // second pass. Macro NDB entries are logical-signature ingredients and are
             // already covered when logical signatures are evaluated.
@@ -218,11 +224,16 @@ public sealed partial class ScannerEngine
             {
                 // The bytes are already in RAM. Re-reading them through a second disk stream / memory map
                 // adds 100% duplicate I/O. Use fast in-memory compiled match directly.
+                var useCombinedNdbIndex = !containerPreScanned &&
+                    (streamableNdb.Count != 0 || fixedNdbCandidateRules.Count != 0);
                 rawMatch = (state.Compiled.Match(
                     fullData,
                     "compiled-database",
-                    includeNdb: false,
-                    collectAllMatches: options.CollectAllMatches),
+                    includeNdb: useCombinedNdbIndex,
+                    collectAllMatches: options.CollectAllMatches,
+                    ndbFilter: useCombinedNdbIndex ? streamableNdb.Contains : null,
+                    ndbPatternCandidates: containerPreScanned ? null : matchedFixedNdbCandidates,
+                    ndbCandidateFilter: containerPreScanned ? null : fixedNdbCandidateRules.Contains),
                     state.Compiled.MatchesFalsePositive(fullData),
                     info.Length);
             }
@@ -272,7 +283,13 @@ public sealed partial class ScannerEngine
                         .Where(x => x.MacroGroup is null &&
                                     LdbRuntime.TargetMatchesFileType(x.Target, signatureFileType));
                     if (!containerPreScanned)
-                        materializedNdb = materializedNdb.Where(x => !streamableNdb.Contains(x));
+                    {
+                        materializedNdb = materializedNdb.Where(x =>
+                            !streamableNdb.Contains(x) &&
+                            (!x.Pattern.IsFixed ||
+                             ScanTypePolicy.IsNormalizedTarget(x.Target) ||
+                             matchedFixedNdbCandidates.Contains(x)));
+                    }
 
                     detections.AddRange(EvaluateNdb(
                         materializedNdb,

@@ -35,46 +35,102 @@ public sealed partial class CompiledSignatureSet
     private static void MatchSingleFixed(
         BoyerMooreHorspoolMatcher matcher,
         ContentSignature entry,
+        NdbSignature? ndbSignature,
         ReadOnlySpan<byte> data,
         Dictionary<string, Detection> hits,
-        bool includeNdb)
+        bool includeNdb,
+        Func<NdbSignature, bool>? ndbFilter,
+        ISet<NdbSignature>? ndbPatternCandidates,
+        Func<NdbSignature, bool>? ndbCandidateFilter)
     {
-        if (!includeNdb && entry.Type == SignatureType.Ndb)
+        var start = matcher.FindFirst(data);
+        if (start < 0)
             return;
 
-        var start = matcher.FindFirst(data);
-        if (start >= 0 && OffsetAllows(entry.OffsetExpression, start, data.Length))
+        if (entry.Type == SignatureType.Ndb && ndbSignature is not null &&
+            ndbPatternCandidates is not null &&
+            !ndbPatternCandidates.Contains(ndbSignature) &&
+            (ndbCandidateFilter is null || ndbCandidateFilter(ndbSignature)))
+        {
+            ndbPatternCandidates.Add(ndbSignature);
+        }
+
+        if (entry.Type == SignatureType.Ndb &&
+            (!includeNdb || ndbSignature is null || (ndbFilter is not null && !ndbFilter(ndbSignature))))
+            return;
+
+        if (OffsetAllows(entry.OffsetExpression, start, data.Length))
         {
             hits.TryAdd(entry.Name, new Detection(entry.Name, entry.Type, start, entry.SourceFile, "Fixed content pattern matched by BM fast path."));
         }
     }
 
     private void MatchAho(
+        AhoCorasickMatcher matcher,
+        IReadOnlyList<ContentSignature> entries,
+        IReadOnlyList<NdbSignature?>? ndbEntries,
         ReadOnlySpan<byte> data,
         Dictionary<string, Detection> hits,
         long baseOffset,
         long totalLength,
         bool collectAllMatches,
-        bool includeNdb)
+        bool includeNdb,
+        Func<NdbSignature, bool>? ndbFilter,
+        ISet<NdbSignature>? ndbPatternCandidates,
+        Func<NdbSignature, bool>? ndbCandidateFilter)
     {
         var state = 0;
-        var matches = new List<(int Id, long EndOffset)>();
-        _ac.Scan(data, ref state, baseOffset, matches);
-        foreach (var (id, endOffset) in matches)
+        var dataLength = data.Length;
+        var ignoredPatternIds = new HashSet<int>();
+        matcher.ScanUntil(data, ref state, baseOffset, (id, endOffset) =>
         {
-            var item = _acEntries[id];
-            if (!includeNdb && item.Type == SignatureType.Ndb)
-                continue;
+            var item = entries[id];
+            if (hits.ContainsKey(item.Name))
+            {
+                ignoredPatternIds.Add(id);
+                return false;
+            }
+
+            if (item.Type == SignatureType.Ndb)
+            {
+                var ndb = ndbEntries is not null && (uint)id < (uint)ndbEntries.Count
+                    ? ndbEntries[id]
+                    : null;
+                if (!includeNdb || ndb is null)
+                {
+                    ignoredPatternIds.Add(id);
+                    return false;
+                }
+
+                var passesNdbFilter = ndbFilter is null || ndbFilter(ndb);
+                if (!passesNdbFilter)
+                {
+                    if (ndbPatternCandidates is not null &&
+                        (ndbCandidateFilter is null || ndbCandidateFilter(ndb)))
+                    {
+                        // One raw occurrence is enough to admit a fixed pattern to
+                        // the later target/offset-aware evaluator. Further raw hits
+                        // for the same rule do not add information.
+                        ndbPatternCandidates.Add(ndb);
+                    }
+                    ignoredPatternIds.Add(id);
+                    return false;
+                }
+            }
 
             var start = endOffset - item.Pattern.MinLength + 1;
-            if (start < baseOffset || !OffsetAllows(item.OffsetExpression, start, totalLength)) continue;
+            if (start < baseOffset || !OffsetAllows(item.OffsetExpression, start, totalLength))
+                return false;
             var relative = start - baseOffset;
-            if (relative < 0 || relative > int.MaxValue || relative + item.Pattern.MinLength > data.Length) continue;
-            // Only fixed patterns enter the AC index. The automaton has already
-            // matched all bytes, so re-running the general pattern matcher is redundant.
-            if (hits.TryAdd(item.Name, new Detection(item.Name, item.Type, start, item.SourceFile, "Content pattern matched.")) && !collectAllMatches)
-                return;
-        }
+            if (relative < 0 || relative > int.MaxValue || (long)relative + item.Pattern.MinLength > dataLength)
+                return false;
+
+            // The automaton has already matched every byte in this fixed pattern.
+            // One valid occurrence per signature is enough for the detection list.
+            hits.TryAdd(item.Name, new Detection(item.Name, item.Type, start, item.SourceFile, "Content pattern matched."));
+            ignoredPatternIds.Add(id);
+            return !collectAllMatches;
+        }, ignoredPatternIds);
     }
 
     private static void MatchFlexible(

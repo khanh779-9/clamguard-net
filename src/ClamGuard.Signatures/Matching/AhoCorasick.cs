@@ -131,8 +131,8 @@ public sealed class AhoCorasickMatcher
     }
 
     /// <summary>
-    /// Finds pattern IDs which occur at least once without retaining match offsets.
-    /// Suitable for candidate filtering before a more specific matcher validates hits.
+    /// Finds distinct pattern IDs that occur in the supplied data without retaining
+    /// every match position. Useful for candidate discovery and diagnostics.
     /// </summary>
     public HashSet<int> FindMatchingIds(ReadOnlySpan<byte> data)
     {
@@ -146,7 +146,6 @@ public sealed class AhoCorasickMatcher
         {
             state = Advance(state, data[i]);
             var outputState = state;
-
             while (outputState >= 0)
             {
                 for (var outputIndex = _nodes[outputState].FirstOutput;
@@ -155,7 +154,6 @@ public sealed class AhoCorasickMatcher
                 {
                     matched.Add(_outputs[outputIndex].PatternId);
                 }
-
                 outputState = _nodes[outputState].OutputLink;
             }
         }
@@ -187,6 +185,48 @@ public sealed class AhoCorasickMatcher
                 outputState = _nodes[outputState].OutputLink;
             }
         }
+    }
+
+    /// <summary>
+    /// Visits matches as they are found without materializing a list of every
+    /// occurrence. Return true from the callback to stop scanning immediately.
+    /// The state is retained by the caller so this also supports chunked streams.
+    /// </summary>
+    public bool ScanUntil(
+        ReadOnlySpan<byte> data,
+        ref int state,
+        long baseOffset,
+        Func<int, long, bool> onMatch,
+        HashSet<int>? ignoredPatternIds = null)
+    {
+        ArgumentNullException.ThrowIfNull(onMatch);
+        Build();
+        if ((uint)state >= (uint)_nodes.Count)
+            state = 0;
+
+        for (var i = 0; i < data.Length; i++)
+        {
+            state = Advance(state, data[i]);
+            var outputState = state;
+
+            while (outputState >= 0)
+            {
+                for (var outputIndex = _nodes[outputState].FirstOutput;
+                     outputIndex >= 0;
+                     outputIndex = _outputs[outputIndex].Next)
+                {
+                    var patternId = _outputs[outputIndex].PatternId;
+                    if (ignoredPatternIds is { Count: > 0 } && ignoredPatternIds.Contains(patternId))
+                        continue;
+                    if (onMatch(patternId, baseOffset + i))
+                        return true;
+                }
+
+                outputState = _nodes[outputState].OutputLink;
+            }
+        }
+
+        return false;
     }
 
     private int Advance(int state, byte value)

@@ -10,7 +10,7 @@
                 <StackPanel>
                     <TextBlock Text="{loc:Loc settings.appearance}" Style="{DynamicResource Style.SectionLabel}" />
                     <TextBlock Text="{loc:Loc settings.theme}" Margin="0,5,0,0" Style="{DynamicResource Style.CardTitle}" />
-                    <TextBlock Text="{loc:Loc settings.theme_desc}" Margin="0,4,0,12" Style="{DynamicResource Style.MutedText}" />
+                    <TextBlock Text="{loc:Loc settings.theme_desc}" Margin="0,4,0,12" Style="{DynamicResource Style.MutedText}" TextWrapping="Wrap" />
                     <ComboBox x:Name="ThemeComboBox" Style="{DynamicResource Style.ComboBox}" ItemContainerStyle="{DynamicResource Style.ComboBoxItem}"
                               SelectedValue="{Binding Theme, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" SelectedValuePath="Tag" Height="36">
                         <ComboBoxItem Content="{loc:Loc settings.dark}" Tag="Dark" />
@@ -24,7 +24,7 @@
             <Border Margin="0,12,0,0" Style="{DynamicResource Style.Card}" Padding="18">
                 <StackPanel>
                     <TextBlock Text="{loc:Loc settings.language}" Style="{DynamicResource Style.SectionLabel}" />
-                    <TextBlock Text="{loc:Loc settings.language_desc}" Margin="0,5,0,12" Style="{DynamicResource Style.MutedText}" />
+                    <TextBlock Text="{loc:Loc settings.language_desc}" Margin="0,5,0,12" Style="{DynamicResource Style.MutedText}" TextWrapping="Wrap" />
                     <ComboBox x:Name="LanguageComboBox" Style="{DynamicResource Style.ComboBox}" ItemContainerStyle="{DynamicResource Style.ComboBoxItem}"
                               SelectedValue="{Binding Language, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" SelectedValuePath="Tag" Height="36">
                         <ComboBoxItem Content="{loc:Loc settings.english}" Tag="en-US" />
@@ -37,11 +37,11 @@
             <Border Margin="0,12,0,0" Style="{DynamicResource Style.Card}" Padding="18">
                 <StackPanel>
                     <TextBlock Text="{loc:Loc settings.actions_title}" Style="{DynamicResource Style.SectionLabel}" />
-                    <TextBlock Text="{loc:Loc settings.actions_desc}" Margin="0,4,0,14" Style="{DynamicResource Style.MutedText}" />
+                    <TextBlock Text="{loc:Loc settings.actions_desc}" Margin="0,4,0,14" Style="{DynamicResource Style.MutedText}" TextWrapping="Wrap" />
 
                     <!-- On-Demand Scan Default Action -->
                     <TextBlock Text="{loc:Loc settings.scan_action}" Style="{DynamicResource Style.CardTitle}" FontSize="12.5" />
-                    <TextBlock Text="{loc:Loc settings.scan_action_desc}" Margin="0,2,0,8" Style="{DynamicResource Style.MutedText}" />
+                    <TextBlock Text="{loc:Loc settings.scan_action_desc}" Margin="0,2,0,8" Style="{DynamicResource Style.MutedText}" TextWrapping="Wrap" />
                     <ComboBox Style="{DynamicResource Style.ComboBox}" ItemContainerStyle="{DynamicResource Style.ComboBoxItem}"
                               SelectedValue="{Binding ScanThreatAction, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" SelectedValuePath="Tag" Height="36" Margin="0,0,0,14">
                         <ComboBoxItem Content="{loc:Loc settings.action_manual}" Tag="Manual" />
@@ -52,7 +52,7 @@
 
                     <!-- Real-time Protection Default Action -->
                     <TextBlock Text="{loc:Loc settings.realtime_action}" Style="{DynamicResource Style.CardTitle}" FontSize="12.5" />
-                    <TextBlock Text="{loc:Loc settings.realtime_action_desc}" Margin="0,2,0,8" Style="{DynamicResource Style.MutedText}" />
+                    <TextBlock Text="{loc:Loc settings.realtime_action_desc}" Margin="0,2,0,8" Style="{DynamicResource Style.MutedText}" TextWrapping="Wrap" />
                     <ComboBox Style="{DynamicResource Style.ComboBox}" ItemContainerStyle="{DynamicResource Style.ComboBoxItem}"
                               SelectedValue="{Binding RealtimeThreatAction, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" SelectedValuePath="Tag" Height="36">
                         <ComboBoxItem Content="{loc:Loc settings.action_quarantine}" Tag="Quarantine" />
@@ -63,10 +63,21 @@
             </Border>
 
             <Border Margin="0,12,0,0" Style="{DynamicResource Style.CardQuiet}" Padding="15">
-                <StackPanel Orientation="Horizontal">
-                    <Path Width="15" Height="15" Margin="0,1,9,0" Stroke="{DynamicResource Brush.TextSecondary}" StrokeThickness="1.4" Data="{DynamicResource Icon.Info}" />
-                    <TextBlock Text="{loc:Loc settings.stored}" Style="{DynamicResource Style.MutedText}" />
-                </StackPanel>
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="24" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <Path Width="15" Height="15" Margin="0,1,9,0"
+                          VerticalAlignment="Top"
+                          Stroke="{DynamicResource Brush.TextSecondary}"
+                          StrokeThickness="1.4"
+                          Data="{DynamicResource Icon.Info}" />
+                    <TextBlock Grid.Column="1"
+                               Text="{loc:Loc settings.stored}"
+                               Style="{DynamicResource Style.MutedText}"
+                               TextWrapping="Wrap" />
+                </Grid>
             </Border>
         </StackPanel>
     </ScrollViewer>

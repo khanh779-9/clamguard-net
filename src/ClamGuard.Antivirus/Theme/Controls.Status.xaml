@@ -80,8 +80,13 @@
         </Setter>
     </Style>
 
-    <Style x:Key="Style.ToolsReadyMetric" TargetType="TextBlock" BasedOn="{StaticResource Style.MetricValue}">
+    <Style x:Key="Style.ToolsReadyMetric" TargetType="TextBlock">
+        <!-- Inline the MetricValue style setters to avoid a StaticResource dependency during XAML parse time -->
+        <Setter Property="Margin" Value="0,4,0,0" />
+        <Setter Property="FontSize" Value="20" />
+        <Setter Property="FontWeight" Value="SemiBold" />
         <Setter Property="Foreground" Value="{DynamicResource Brush.Danger}" />
+        <Setter Property="TextTrimming" Value="CharacterEllipsis" />
         <Style.Triggers>
             <DataTrigger Binding="{Binding DatabaseReady}" Value="True">
                 <Setter Property="Foreground" Value="{DynamicResource Brush.Success}" />

@@ -9,6 +9,7 @@ ClamGuard.NET is a managed malware-scanning engine and a Windows WPF desktop app
 - Loads supported ClamAV database containers (`.cvd`, `.cld`, `.cud`) and signature database families.
 - Parses and matches hash signatures, hexadecimal content patterns, NDB rules, logical LDB rules, metadata signatures, and selected specialized database formats.
 - Uses a sparse Aho–Corasick matcher for fixed-byte patterns and a Boyer–Moore–Horspool fast path when a single suitable fixed pattern is present.
+- Uses a logical-signature seed index that verifies the complete fixed anchor before scheduling an LDB rule for full evaluation, and evaluates only the macro groups needed by surviving logical candidates.
 - Supports chunked scanning with matcher state preserved across read boundaries and incremental whole-file hashing.
 - Includes target-aware file-type detection and dedicated handling for selected PE, archive, image, PDF/SWF, Office/OLE, mail, HTML, and document formats.
 - Provides bounded archive expansion, parser depth, entry-count, decompression, and scan-size controls.

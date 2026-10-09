@@ -30,9 +30,39 @@ public sealed partial class ScannerEngine
             if (!options.CollectAllMatches && detections.Count != 0)
                 return new ScanResult(ScanVerdict.Malicious, path, fileType, [detections[0]], length, TimeSpan.Zero, state.Database.Databases.FirstOrDefault());
         }
-        detections.AddRange(state.Compiled.Match(data, "compiled-database", includeNdb: false, collectAllMatches: options.CollectAllMatches));
         var ndb = state.Database.Signatures.OfType<NdbSignature>().ToArray();
-        detections.AddRange(EvaluateNdb(ndb, data, options.Limits, fileType, cancellationToken));
+        var applicableRawNdb = ndb
+            .Where(x => x.MacroGroup is null && LdbRuntime.TargetMatchesFileType(x.Target, fileType))
+            .ToArray();
+        var streamableNdb = applicableRawNdb
+            .Where(x => ScanTypePolicy.CanStreamRawNdb(x, fileType))
+            .ToHashSet();
+        var fixedNdbCandidateRules = applicableRawNdb
+            .Where(x => !streamableNdb.Contains(x) &&
+                        x.Pattern.IsFixed &&
+                        !ScanTypePolicy.IsNormalizedTarget(x.Target))
+            .ToHashSet();
+        var matchedFixedNdbCandidates = new HashSet<NdbSignature>();
+        var useCombinedNdbIndex = streamableNdb.Count != 0 || fixedNdbCandidateRules.Count != 0;
+
+        detections.AddRange(state.Compiled.Match(
+            data,
+            "compiled-database",
+            includeNdb: useCombinedNdbIndex,
+            collectAllMatches: options.CollectAllMatches,
+            ndbFilter: useCombinedNdbIndex ? streamableNdb.Contains : null,
+            ndbPatternCandidates: matchedFixedNdbCandidates,
+            ndbCandidateFilter: fixedNdbCandidateRules.Contains));
+        detections.AddRange(EvaluateNdb(
+            applicableRawNdb.Where(x =>
+                !streamableNdb.Contains(x) &&
+                (!x.Pattern.IsFixed ||
+                 ScanTypePolicy.IsNormalizedTarget(x.Target) ||
+                 matchedFixedNdbCandidates.Contains(x))),
+            data,
+            options.Limits,
+            fileType,
+            cancellationToken));
         detections.AddRange(EvaluateLogical(state.Database.Signatures.OfType<LogicalSignature>(), ndb, data, options.Limits, fileType, state.Database.IconDatabase, [], cancellationToken, scanState: state, scanOptions: options));
         if (ScanTypePolicy.IsPe(fileType))
             detections.AddRange(PeSpecializedMatcher.Match(data, state, options.Limits, cancellationToken));
@@ -185,19 +215,51 @@ public sealed partial class ScannerEngine
         // A shared compact fragment index rejects pure-AND logical signatures
         // whose required fixed-byte anchor cannot be present. Full LDB matching
         // below still checks every subsignature, offset, modifier, and expression.
-        var logicalCandidates = scanState?.Compiled.FindLogicalCandidates(data);
-        var macroPositions = new Dictionary<int, List<int>>();
-        var macroMembers = ndbSignatures
-            .Where(static x => x.MacroGroup is not null)
-            .GroupBy(x => x.MacroGroup!.Value)
-            .ToDictionary(x => x.Key, x => x.ToArray());
+        var canPreFilterByFileType = parentTypes.Count == 0 && !retyped;
 
-        // ClamAV stores the most recent match for each macro group. Pre-compute
-        // those positions so LDB content subsignatures using $N$ can resolve
-        // the same absolute anchor before the logical expression is evaluated.
-        // Only run this if any active signature actually contains macro subsignatures.
-        var hasAnyMacroSubSignatures = signatures.Any(static s => s.MacroSubSignatures is not null && s.MacroSubSignatures.Count != 0);
-        if (hasAnyMacroSubSignatures && macroMembers.Count != 0)
+        var dataLength = data.Length;
+
+        var signatureArray = (signatures as LogicalSignature[] ?? signatures.ToArray())
+            .Where(signature =>
+                (!canPreFilterByFileType || LdbRuntime.TargetMatchesFileType(signature.Target?.Target ?? 0, fileType)) &&
+                (signature.Target?.MinFileSize is null || dataLength >= signature.Target.MinFileSize.Value) &&
+                (signature.Target?.MaxFileSize is null || dataLength <= signature.Target.MaxFileSize.Value))
+            .ToArray();
+        var logicalCandidates = scanState?.Compiled.FindLogicalCandidates(data);
+        bool CanStillMatch(LogicalSignature signature)
+            => logicalCandidates is null || scanState is null ||
+               !scanState.Compiled.IsLogicalSignaturePrefiltered(signature) ||
+               logicalCandidates.Contains(signature);
+
+        var activeSignatures = new List<LogicalSignature>(signatureArray.Length);
+        foreach (var signature in signatureArray)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (CanStillMatch(signature))
+                activeSignatures.Add(signature);
+        }
+
+        // Only compute macro groups required by LDB rules that survived the
+        // mandatory-anchor prefilter (or are not safely indexable). Scanning every
+        // NDB macro group against the whole file first caused repeated full-file
+        // searches unrelated to any LDB rule that could still match.
+        var requiredMacroGroups = new HashSet<int>();
+        foreach (var signature in activeSignatures)
+        {
+            if (signature.MacroSubSignatures is null)
+                continue;
+            foreach (var macro in signature.MacroSubSignatures.Values)
+                requiredMacroGroups.Add(macro.MacroGroup);
+        }
+
+        var macroPositions = new Dictionary<int, List<int>>();
+        var macroMembers = requiredMacroGroups.Count == 0
+            ? new Dictionary<int, NdbSignature[]>()
+            : ndbSignatures
+                .Where(x => x.MacroGroup.HasValue && requiredMacroGroups.Contains(x.MacroGroup.Value))
+                .GroupBy(x => x.MacroGroup!.Value)
+                .ToDictionary(x => x.Key, x => x.ToArray());
+        if (macroMembers.Count != 0)
         {
             foreach (var pair in macroMembers)
             {
@@ -222,14 +284,9 @@ public sealed partial class ScannerEngine
             }
         }
 
-        foreach (var signature in signatures)
+        foreach (var signature in activeSignatures)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (logicalCandidates is not null &&
-                scanState is not null &&
-                scanState.Compiled.IsLogicalSignaturePrefiltered(signature) &&
-                !logicalCandidates.Contains(signature))
-                continue;
 
             var target = signature.Target;
             var normalized = NormalizeTargetData(data, fileType, target?.Target ?? 0);
@@ -398,6 +455,8 @@ public sealed partial class ScannerEngine
                         target.HandlerType,
                         parentTypes,
                         cancellationToken));
+                    if (scanOptions is not null && !scanOptions.CollectAllMatches && results.Count != 0)
+                        return results;
                 }
                 continue;
             }
@@ -413,6 +472,8 @@ public sealed partial class ScannerEngine
                 null,
                 signature.SourceFile,
                 $"Logical expression evaluated true: {signature.Expression}"));
+            if (scanOptions is not null && !scanOptions.CollectAllMatches)
+                return results;
         }
         return results;
     }

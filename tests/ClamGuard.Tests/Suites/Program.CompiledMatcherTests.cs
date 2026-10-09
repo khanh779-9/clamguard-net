@@ -1,3 +1,5 @@
+using ClamGuard.Signatures.Matching;
+
 internal static partial class Program
 {
     private static async Task CompiledMatcherTestsAsync()
@@ -30,6 +32,31 @@ internal static partial class Program
                automatonMatches.Any(x => x.Id == 3 && x.EndOffset == 5),
             "compact Aho-Corasick keeps suffix outputs and chunk-boundary offsets");
 
+        var earlyAutomatonState = 0;
+        var earlyVisits = 0;
+        var stoppedEarly = automaton.ScanUntil("ushers"u8, ref earlyAutomatonState, 0, (_, _) =>
+        {
+            earlyVisits++;
+            return true;
+        });
+        Assert(stoppedEarly && earlyVisits == 1,
+            "Aho-Corasick can stop at the first accepted match without collecting every occurrence");
+
+        var repeatedAutomaton = new AhoCorasickMatcher();
+        repeatedAutomaton.Add("00"u8, 7);
+        repeatedAutomaton.Build();
+        var ignoredPatternIds = new HashSet<int>();
+        var repeatedState = 0;
+        var repeatedVisits = 0;
+        _ = repeatedAutomaton.ScanUntil("000000"u8, ref repeatedState, 0, (id, _) =>
+        {
+            repeatedVisits++;
+            ignoredPatternIds.Add(id);
+            return false;
+        }, ignoredPatternIds);
+        Assert(repeatedVisits == 1,
+            "Aho-Corasick can ignore later occurrences after a signature has supplied its first useful hit");
+
         var ndbOnly = new ClamGuard.Signatures.Matching.CompiledSignatureSet();
         ndbOnly.Add(new NdbSignature(
             "Demo.Ndb", "demo.ndb", 0, "*", HexPatternParser.Parse("4e44424d414c")));
@@ -40,6 +67,46 @@ internal static partial class Program
             "includeNdb=false excludes fixed NDB patterns from the shared matcher");
         Assert(ndbOnly.Match("NDBMAL"u8, "demo", includeNdb: true).Any(x => x.Name == "Demo.Ndb"),
             "includeNdb=true keeps fixed NDB matching enabled");
+        Assert(ndbOnly.Match("OTHER"u8, "demo", includeNdb: false).Any(x => x.Name == "Demo.Content"),
+            "content-only matching remains available when NDB matching is disabled");
+        Assert(ndbOnly.Match("NDBMAL"u8, "demo", includeNdb: true, ndbFilter: static _ => false).Count == 0,
+            "the in-memory NDB matcher respects its caller's target-applicability filter");
+
+        var nonStreamableNdb = new NdbSignature(
+            "Demo.PeOffset", "demo.ndb", 1, "EP+0", HexPatternParser.Parse("50454f4646534554"));
+        var candidateSet = new ClamGuard.Signatures.Matching.CompiledSignatureSet();
+        candidateSet.Add(nonStreamableNdb);
+        candidateSet.Add(new ContentSignature(
+            "Demo.OtherContent", SignatureType.Content, "demo.db", HexPatternParser.Parse("4e4f5448455245")));
+        candidateSet.Build();
+        var fixedNdbCandidates = new HashSet<NdbSignature>();
+        _ = candidateSet.Match(
+            "xxPEOFFSETyy"u8,
+            "demo",
+            includeNdb: true,
+            collectAllMatches: true,
+            ndbFilter: static _ => false,
+            ndbPatternCandidates: fixedNdbCandidates,
+            ndbCandidateFilter: static _ => true);
+        Assert(fixedNdbCandidates.Contains(nonStreamableNdb),
+            "fixed NDB patterns with special offsets are collected as candidates without bypassing offset validation");
+
+        var logicalAnchorSet = new ClamGuard.Signatures.Matching.CompiledSignatureSet();
+        var logicalAnchorRule = new LogicalSignature(
+            "Logic.AnchorPrefilter",
+            "demo.ldb",
+            string.Empty,
+            "0&1",
+            [
+                new ContentSignature("Logic.AnchorPrefilter#0", SignatureType.Logical, "demo.ldb", HexPatternParser.Parse("414243444546474849")),
+                new ContentSignature("Logic.AnchorPrefilter#1", SignatureType.Logical, "demo.ldb", HexPatternParser.Parse("5a"))
+            ]);
+        logicalAnchorSet.Add(logicalAnchorRule);
+        logicalAnchorSet.Build();
+        Assert(!logicalAnchorSet.FindLogicalCandidates("ABCDEFGH"u8).Contains(logicalAnchorRule),
+            "logical prefilter rejects a seed-only hit when the complete required anchor is absent");
+        Assert(logicalAnchorSet.FindLogicalCandidates("---ABCDEFGHI---"u8).Contains(logicalAnchorRule),
+            "logical prefilter preserves candidates whose full required anchor occurs in the file");
 
         var singleNdbOnly = new ClamGuard.Signatures.Matching.CompiledSignatureSet();
         singleNdbOnly.Add(new NdbSignature(

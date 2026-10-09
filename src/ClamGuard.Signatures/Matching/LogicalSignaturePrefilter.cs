@@ -45,16 +45,16 @@ internal sealed class LogicalSignaturePrefilter
             if (!TryGetAnchorVariants(signature, out var variants))
                 continue;
 
-            var selectedSeeds = new HashSet<ulong>();
-            foreach (var variant in variants)
-                selectedSeeds.Add(SelectSeed(variant, _signaturesBySeed));
-
             _indexed.Add(signature);
-            foreach (var seed in selectedSeeds)
+            foreach (var variant in variants)
             {
+                var (seed, seedOffset) = SelectSeed(variant, _signaturesBySeed);
                 var exists = _signaturesBySeed.TryGetValue(seed, out var existing);
                 var entryIndex = _seedEntries.Count;
-                _seedEntries.Add(new SeedEntry(signature, exists ? existing.Head : -1));
+                // Retain the chosen fixed anchor bytes and seed offset. A seed hit
+                // is only a candidate; confirming the whole anchor here prevents
+                // thousands of false candidates from triggering full LDB scans.
+                _seedEntries.Add(new SeedEntry(signature, variant, seedOffset, exists ? existing.Head : -1));
                 _signaturesBySeed[seed] = new SeedBucket(entryIndex, existing.Count + 1);
             }
         }
@@ -77,7 +77,15 @@ internal sealed class LogicalSignaturePrefilter
                 continue;
 
             for (var entryIndex = bucket.Head; entryIndex >= 0; entryIndex = _seedEntries[entryIndex].Next)
-                candidates.Add(_seedEntries[entryIndex].Signature);
+            {
+                var entry = _seedEntries[entryIndex];
+                var candidateStart = offset - entry.SeedOffset;
+                if (candidateStart < 0 || candidateStart > data.Length - entry.AnchorBytes.Length)
+                    continue;
+                if (!data.Slice(candidateStart, entry.AnchorBytes.Length).SequenceEqual(entry.AnchorBytes))
+                    continue;
+                candidates.Add(entry.Signature);
+            }
 
             if (candidates.Count == _indexed.Count)
                 break;
@@ -126,13 +134,14 @@ internal sealed class LogicalSignaturePrefilter
         return true;
     }
 
-    private static ulong SelectSeed(
+    private static (ulong Seed, int Offset) SelectSeed(
         ReadOnlySpan<byte> pattern,
         IReadOnlyDictionary<ulong, SeedBucket> frequency)
     {
         var lastOffset = pattern.Length - SeedLength;
         var offset = GetInitialSeedOffset(pattern, lastOffset + 1);
         ulong bestSeed = 0;
+        var bestOffset = 0;
         var bestFrequency = int.MaxValue;
 
         for (var checkedOffsets = 0; checkedOffsets <= lastOffset; checkedOffsets++)
@@ -142,16 +151,17 @@ internal sealed class LogicalSignaturePrefilter
             var currentFrequency = frequency.TryGetValue(seed, out var bucket) ? bucket.Count : 0;
 
             if (currentFrequency == 0)
-                return seed;
+                return (seed, currentOffset);
 
             if (currentFrequency < bestFrequency)
             {
                 bestSeed = seed;
+                bestOffset = currentOffset;
                 bestFrequency = currentFrequency;
             }
         }
 
-        return bestSeed;
+        return (bestSeed, bestOffset);
     }
 
     private static int GetInitialSeedOffset(ReadOnlySpan<byte> pattern, int possibleOffsets)
@@ -228,5 +238,5 @@ internal sealed class LogicalSignaturePrefilter
     }
 
     private readonly record struct SeedBucket(int Head, int Count);
-    private readonly record struct SeedEntry(LogicalSignature Signature, int Next);
+    private readonly record struct SeedEntry(LogicalSignature Signature, byte[] AnchorBytes, int SeedOffset, int Next);
 }
