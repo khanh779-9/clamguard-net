@@ -171,6 +171,30 @@ internal static partial class Program
             var hwpmlResult = new ClamGuard.Scanner.ScannerEngine(hwpmlManager).Scan(hwpmlFile);
             Assert(hwpmlResult.FileType == "XML_HWP" && hwpmlResult.Detections.Any(x => x.Name == "Special.HwpmlBinary"),
                 "HWPML Base64 binary callback decodes and rescans embedded content");
+
+            // Legacy Microsoft Office XML uses the independent XMLDOCS option
+            // (native cli_scanmsxml), not the ZIP/ARCHIVE switch. Its bindata
+            // payload should only be scanned when ScanXMLDocs is enabled.
+            var msxmlDb = Path.Combine(root, "msxml-db");
+            Directory.CreateDirectory(msxmlDb);
+            File.WriteAllText(Path.Combine(msxmlDb, "types.ftm"),
+                "0:0:3c3f786d6c:MSXML:CL_TYPE_ANY:CL_TYPE_XML_WORD\n");
+            File.WriteAllText(Path.Combine(msxmlDb, "msxml.ndb"),
+                "Special.MsXmlBinary:0:*:4d53584d4c2d42494e4152592d4d41524b4552\n"); // MSXML-BINARY-MARKER
+            var msxmlManager = new DatabaseManager();
+            msxmlManager.LoadAndCompile(msxmlDb, true);
+            var msxmlPayload = Encoding.ASCII.GetBytes("MSXML-BINARY-MARKER");
+            var msxml = "<?xml version=\"1.0\"?><wordDocument><binData>" +
+                        Convert.ToBase64String(msxmlPayload) + "</binData></wordDocument>";
+            var msxmlFile = Path.Combine(root, "legacy-office.bin");
+            await File.WriteAllTextAsync(msxmlFile, msxml);
+            var msxmlScanner = new ClamGuard.Scanner.ScannerEngine(msxmlManager);
+            var msxmlEnabled = msxmlScanner.Scan(msxmlFile, new ScanOptions { CollectAllMatches = true, ScanXMLDocs = true });
+            var msxmlDisabled = msxmlScanner.Scan(msxmlFile, new ScanOptions { CollectAllMatches = true, ScanXMLDocs = false });
+            Assert(msxmlEnabled.FileType == "XML_WORD" && msxmlEnabled.Detections.Any(x => x.Name == "Special.MsXmlBinary"),
+                "ScanXMLDocs extracts and scans Base64 binData from legacy MS Office XML");
+            Assert(!msxmlDisabled.Detections.Any(x => x.Name == "Special.MsXmlBinary"),
+                "ScanXMLDocs=false skips the legacy MS Office XML parser while preserving raw scanning");
         }
         finally
         {

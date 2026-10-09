@@ -60,8 +60,8 @@ internal static partial class SpecializedFileHandlers
             {
                 results.AddRange(ScanNestedBytes(payload, state, options,
                     $"{path}#onenote-attachment-{attachmentIndex++}", cancellationToken));
-                if (!options.CollectAllMatches && results.Count != 0)
-                    return [results[0]];
+                if (!options.CollectAllMatches && options.HasBlockingDetections(results))
+                    return options.FilterDetections(results).Take(1).ToArray();
             }
 
             search = marker + headerSize + checked((int)payloadLength);
@@ -122,8 +122,8 @@ internal static partial class SpecializedFileHandlers
 
                 results.AddRange(ScanNestedBytes(decoded, state, options,
                     $"{path}#xdp-pdf-{pdfAt}", cancellationToken));
-                if (!options.CollectAllMatches && results.Count != 0)
-                    return [results[0]];
+                if (!options.CollectAllMatches && options.HasBlockingDetections(results))
+                    return options.FilterDetections(results).Take(1).ToArray();
             }
         }
         catch (XmlException)

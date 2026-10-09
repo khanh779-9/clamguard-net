@@ -32,7 +32,7 @@ internal static partial class ArchiveScanner
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 filePosition++;
-                if (budget.Entries++ >= options.Limits.MaxArchiveEntries) break;
+                if (budget.Entries++ >= options.Limits.MaxArchiveEntries) { budget.LimitExceeded = true; break; }
                 if (string.IsNullOrEmpty(entry.Name)) continue;
 
                 var metadata = filePosition <= zipMetadata.Count ? zipMetadata[(int)filePosition - 1] : null;
@@ -40,6 +40,11 @@ internal static partial class ArchiveScanner
                 var metadataOriginalSize = metadata?.OriginalSize ?? entry.Length;
                 var metadataEncrypted = metadata?.Encrypted;
                 var metadataCrc = metadata?.Crc32;
+                if (options.EnableHeuristics && options.HeuristicEncryptedArchive && metadataEncrypted == true &&
+                    !results.Any(x => x.Name.Equals("Heuristics.Encrypted.Zip", StringComparison.OrdinalIgnoreCase)))
+                {
+                    results.Add(new Detection("Heuristics.Encrypted.Zip", SignatureType.Metadata, null, "heuristics", $"Encrypted ZIP member: {entry.FullName}"));
+                }
                 var metadataHits = MatchMetadataSignatures(
                     state.Database.Signatures.OfType<MetadataSignature>(),
                     "ZIP",
@@ -62,12 +67,20 @@ internal static partial class ArchiveScanner
                 if (metadataHits.Count != 0)
                 {
                     results.AddRange(metadataHits);
-                    if (!options.CollectAllMatches) return results;
+                    if (!options.CollectAllMatches && options.HasBlockingDetections(metadataHits)) return results;
                 }
 
-                if (entry.Length < 0 || entry.Length > options.Limits.MaxFileSize) continue;
-                if (entry.CompressedLength > 0 && entry.Length > (long)entry.CompressedLength * Math.Max(1, options.Limits.MaxArchiveCompressionRatio))
+                if (entry.Length < 0) continue;
+                if (entry.Length > options.Limits.MaxFileSize)
+                {
+                    budget.LimitExceeded = true;
                     continue;
+                }
+                if (entry.CompressedLength > 0 && entry.Length > (long)entry.CompressedLength * Math.Max(1, options.Limits.MaxArchiveCompressionRatio))
+                {
+                    budget.LimitExceeded = true;
+                    continue;
+                }
                 byte[] child;
                 try
                 {
@@ -249,7 +262,7 @@ internal static partial class ArchiveScanner
             foreach (var item in decoder)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                if (budget.Entries++ >= options.Limits.MaxArchiveEntries) break;
+                if (budget.Entries++ >= options.Limits.MaxArchiveEntries) { budget.LimitExceeded = true; break; }
 
                 var metadataHits = MatchMetadataSignatures(
                     state.Database.Signatures.OfType<MetadataSignature>(),
@@ -276,11 +289,23 @@ internal static partial class ArchiveScanner
                 if (metadataHits.Count != 0)
                 {
                     results.AddRange(metadataHits);
-                    if (!options.CollectAllMatches) return results;
+                    if (!options.CollectAllMatches && options.HasBlockingDetections(metadataHits)) return results;
                 }
 
+                if (options.EnableHeuristics && options.HeuristicEncryptedArchive && item.Encrypted == true)
+                {
+                    var encryptedName = format switch
+                    {
+                        "7Z" => "Heuristics.Encrypted.7Zip",
+                        "RAR" => "Heuristics.Encrypted.RAR",
+                        _ => "Heuristics.Encrypted." + format
+                    };
+                    if (!results.Any(x => x.Name.Equals(encryptedName, StringComparison.OrdinalIgnoreCase)))
+                        results.Add(new Detection(encryptedName, SignatureType.Metadata, null, "heuristics", $"Encrypted {format} member: {item.Name}"));
+                }
                 if (!item.CanExtract || item.IsDirectory || item.Encrypted == true) continue;
-                if (item.Size < 0 || item.Size > options.Limits.MaxFileSize) continue;
+                if (item.Size < 0) continue;
+                if (item.Size > options.Limits.MaxFileSize) { budget.LimitExceeded = true; continue; }
                 if (!ConsumeBudget(budget, options.Limits, item.Data.Length)) break;
                 results.AddRange(ScanChild(item.Data, item.Name, format, state, options, parents, depth, budget, cancellationToken));
                 if (budget.ExpandedBytes >= options.Limits.MaxArchiveExpandedBytes) break;
@@ -321,7 +346,8 @@ internal static partial class ArchiveScanner
             }
 
             var size = ReadTarNumber(header.Slice(124, 12));
-            if (size < 0 || size > options.Limits.MaxFileSize) break;
+            if (size < 0) break;
+            if (size > options.Limits.MaxFileSize) { budget.LimitExceeded = true; break; }
             var type = header[156];
             var name = pendingPaxPath ?? pendingLongName ?? ReadTarString(header.Slice(0, 100));
             pendingPaxPath = null;
@@ -340,7 +366,7 @@ internal static partial class ArchiveScanner
             }
             else if (IsTarRegularFile(type))
             {
-                if (budget.Entries++ >= options.Limits.MaxArchiveEntries) break;
+                if (budget.Entries++ >= options.Limits.MaxArchiveEntries) { budget.LimitExceeded = true; break; }
                 filePosition++;
                 if (!string.IsNullOrWhiteSpace(name))
                 {
@@ -359,7 +385,7 @@ internal static partial class ArchiveScanner
                     if (cdbHits.Count != 0)
                     {
                         results.AddRange(cdbHits);
-                        if (!options.CollectAllMatches)
+                        if (!options.CollectAllMatches && options.HasBlockingDetections(cdbHits))
                             return results;
                     }
 
@@ -400,7 +426,8 @@ internal static partial class ArchiveScanner
                 if (magic is not ("070701" or "070702")) break;
                 filePosition++;
                 if (!TryReadHex(header.Slice(54, 8), out var fileSize) || !TryReadHex(header.Slice(94, 8), out var nameSize)) break;
-                if (nameSize <= 0 || nameSize > 16 * 1024 * 1024 || fileSize > (ulong)options.Limits.MaxFileSize) break;
+                if (nameSize <= 0 || nameSize > 16 * 1024 * 1024) break;
+                if (fileSize > (ulong)options.Limits.MaxFileSize) { budget.LimitExceeded = true; break; }
                 var nameStart = offset + 110;
                 var nameEnd = checked((long)nameStart + (long)nameSize);
                 var dataStart = Align4(nameEnd);
@@ -410,7 +437,7 @@ internal static partial class ArchiveScanner
                 offset = Align4((int)dataEnd);
                 if (name == "TRAILER!!!") break;
                 if (name.Length == 0) continue;
-                if (budget.Entries++ >= options.Limits.MaxArchiveEntries) break;
+                if (budget.Entries++ >= options.Limits.MaxArchiveEntries) { budget.LimitExceeded = true; break; }
                 var cdbHits = MatchCdbSignatures(
                     state.Database.Signatures.OfType<CdbSignature>(),
                     format,
@@ -424,7 +451,7 @@ internal static partial class ArchiveScanner
                 if (cdbHits.Count != 0)
                 {
                     results.AddRange(cdbHits);
-                    if (!options.CollectAllMatches)
+                    if (!options.CollectAllMatches && options.HasBlockingDetections(cdbHits))
                         return results;
                 }
                 var child = data.Slice((int)dataStart, checked((int)fileSize)).ToArray();
@@ -443,7 +470,8 @@ internal static partial class ArchiveScanner
                 filePosition++;
                 if (!TryReadOctalField(header.Slice(59, 6), out var nameSize) ||
                     !TryReadOctalField(header.Slice(65, 11), out var fileSize)) break;
-                if (nameSize <= 0 || nameSize > 16 * 1024 * 1024 || fileSize < 0 || fileSize > options.Limits.MaxFileSize) break;
+                if (nameSize <= 0 || nameSize > 16 * 1024 * 1024 || fileSize < 0) break;
+                if (fileSize > options.Limits.MaxFileSize) { budget.LimitExceeded = true; break; }
                 var nameStart = checked(offset + 76);
                 var nameEnd = checked((long)nameStart + nameSize);
                 var dataStart = (nameEnd + 1) & ~1L;
@@ -453,7 +481,7 @@ internal static partial class ArchiveScanner
                 offset = checked((int)((dataEnd + 1) & ~1L));
                 if (name == "TRAILER!!!") break;
                 if (name.Length == 0) continue;
-                if (budget.Entries++ >= options.Limits.MaxArchiveEntries) break;
+                if (budget.Entries++ >= options.Limits.MaxArchiveEntries) { budget.LimitExceeded = true; break; }
                 var cdbHits = MatchCdbSignatures(
                     state.Database.Signatures.OfType<CdbSignature>(),
                     format,
@@ -467,7 +495,7 @@ internal static partial class ArchiveScanner
                 if (cdbHits.Count != 0)
                 {
                     results.AddRange(cdbHits);
-                    if (!options.CollectAllMatches)
+                    if (!options.CollectAllMatches && options.HasBlockingDetections(cdbHits))
                         return results;
                 }
                 var child = data.Slice((int)dataStart, checked((int)fileSize)).ToArray();
@@ -491,7 +519,8 @@ internal static partial class ArchiveScanner
                 filePosition++;
                 var nameSize = little ? BinaryPrimitives.ReadUInt16LittleEndian(header.Slice(20, 2)) : BinaryPrimitives.ReadUInt16BigEndian(header.Slice(20, 2));
                 var fileSize = little ? BinaryPrimitives.ReadUInt32LittleEndian(header.Slice(22, 4)) : BinaryPrimitives.ReadUInt32BigEndian(header.Slice(22, 4));
-                if (nameSize == 0 || fileSize > (uint)options.Limits.MaxFileSize) break;
+                if (nameSize == 0) break;
+                if (fileSize > (uint)options.Limits.MaxFileSize) { budget.LimitExceeded = true; break; }
                 var nameStart = checked(offset + 26);
                 var nameEnd = checked((long)nameStart + nameSize);
                 var dataStart = (nameEnd + 1) & ~1L;
@@ -501,7 +530,7 @@ internal static partial class ArchiveScanner
                 offset = checked((int)((dataEnd + 1) & ~1L));
                 if (name == "TRAILER!!!") break;
                 if (name.Length == 0) continue;
-                if (budget.Entries++ >= options.Limits.MaxArchiveEntries) break;
+                if (budget.Entries++ >= options.Limits.MaxArchiveEntries) { budget.LimitExceeded = true; break; }
                 var cdbHits = MatchCdbSignatures(
                     state.Database.Signatures.OfType<CdbSignature>(),
                     format,
@@ -515,7 +544,7 @@ internal static partial class ArchiveScanner
                 if (cdbHits.Count != 0)
                 {
                     results.AddRange(cdbHits);
-                    if (!options.CollectAllMatches)
+                    if (!options.CollectAllMatches && options.HasBlockingDetections(cdbHits))
                         return results;
                 }
                 var child = data.Slice((int)dataStart, checked((int)fileSize)).ToArray();

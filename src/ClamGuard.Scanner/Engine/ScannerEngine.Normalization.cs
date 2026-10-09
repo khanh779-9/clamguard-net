@@ -41,14 +41,16 @@ public sealed partial class ScannerEngine
         results.AddRange(state.Compiled.Match(
             data,
             $"handler-type:{handlerType}",
-            includeNdb: false));
+            includeNdb: false,
+            collectAllMatches: (options.CollectAllMatches || !options.DetectPUA)));
 
         results.AddRange(EvaluateNdb(
             ndb,
             data,
             options.Limits,
             handlerType,
-            cancellationToken));
+            cancellationToken,
+            scanOptions: options));
 
         results.AddRange(EvaluateLogical(
             logical,
@@ -66,14 +68,14 @@ public sealed partial class ScannerEngine
         // Dispatch only the handler requested by the retyping layer. ClamAV's
         // cli_magic_scan() switches on the active layer type; it does not run the
         // PE parser on an ELF/ZIP/etc merely because HandlerType exists.
-        if (ScanTypePolicy.IsPe(handlerType))
+        if (options.ScanPE && ScanTypePolicy.IsPe(handlerType))
             results.AddRange(PeSpecializedMatcher.Match(data, state, options.Limits, cancellationToken));
 
         foreach (var contentScanner in options.ContentScanners)
             results.AddRange(contentScanner.Scan(data, $"handler-type:{handlerType}", cancellationToken));
 
-        if (handlerType.Equals("PE", StringComparison.OrdinalIgnoreCase) ||
-            handlerType.Equals("MSEXE", StringComparison.OrdinalIgnoreCase))
+        if (options.ScanPE && (handlerType.Equals("PE", StringComparison.OrdinalIgnoreCase) ||
+            handlerType.Equals("MSEXE", StringComparison.OrdinalIgnoreCase)))
         {
             results.AddRange(PeOverlayScanner.ScanPeOverlay(data.ToArray(), state, options, cancellationToken));
         }
@@ -87,7 +89,7 @@ public sealed partial class ScannerEngine
         // Archive/document handlers are dispatched only for the active handler
         // type. ArchiveScanner still performs the concrete byte-level subtype
         // detection before extraction.
-        if (ScanTypePolicy.IsArchiveContainer(handlerType))
+        if (ScanTypePolicy.IsArchiveContainer(handlerType) && ScanTypePolicy.ShouldParseContainer(handlerType, options))
         {
             results.AddRange(ArchiveScanner.Scan(
                 data,
@@ -102,12 +104,14 @@ public sealed partial class ScannerEngine
         return results;
     }
 
-    private static byte[]? NormalizeTargetData(ReadOnlySpan<byte> data, string fileType, int target)
+    private static byte[]? NormalizeTargetData(ReadOnlySpan<byte> data, string fileType, int target, ScanOptions? options = null)
     {
-        if (target == 3 && fileType.Equals("HTML", StringComparison.OrdinalIgnoreCase))
-            return NormalizeHtml(data);
-        if (target == 3 && fileType.Equals("HTML_UTF16", StringComparison.OrdinalIgnoreCase))
+        if (target == 3 && (fileType.Equals("HTML", StringComparison.OrdinalIgnoreCase) || fileType.Equals("HTML_UTF16", StringComparison.OrdinalIgnoreCase)))
         {
+            if (options is not null && (!options.ScanHTML || data.Length > options.Limits.MaxHtmlNormalize))
+                return null;
+            if (fileType.Equals("HTML", StringComparison.OrdinalIgnoreCase))
+                return NormalizeHtml(data);
             var text = DecodeUtf16Text(data);
             return text is null ? null : NormalizeHtml(Encoding.Latin1.GetBytes(text));
         }

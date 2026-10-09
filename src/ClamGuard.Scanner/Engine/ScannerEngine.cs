@@ -31,15 +31,22 @@ public sealed partial class ScannerEngine
     public async Task<ScanResult> ScanAsync(string path, ScanOptions? options = null, CancellationToken cancellationToken = default)
     {
         options ??= new ScanOptions();
-        options.Limits.Validate();
+        options.Validate();
         options = CreateEffectiveOptions(options);
+        options.Limits.Validate();
         var started = Stopwatch.StartNew();
+        if (options.Verbose) Trace.WriteLine($"[ClamGuard] Scan started: {path}");
         if (!File.Exists(path))
             return new ScanResult(ScanVerdict.Error, path, null, [], 0, started.Elapsed, _databaseManager.Current.Database.Databases.FirstOrDefault());
 
         var info = new FileInfo(path);
         if (info.Length > options.Limits.MaxFileSize)
-            return new ScanResult(ScanVerdict.Error, path, DetectType(path), [], 0, started.Elapsed, _databaseManager.Current.Database.Databases.FirstOrDefault());
+        {
+            var detections = options.EnableHeuristics && options.HeuristicExceedsMax
+                ? new[] { new Detection("Heuristics.Limits.Exceeded", SignatureType.Metadata, null, "scan-options", $"File size {info.Length} exceeds the configured maximum {options.Limits.MaxFileSize} bytes.") }
+                : Array.Empty<Detection>();
+            return new ScanResult(detections.Length == 0 ? ScanVerdict.Error : ScanVerdict.StrongIndicator, path, DetectType(path), detections, 0, started.Elapsed, _databaseManager.Current.Database.Databases.FirstOrDefault());
+        }
 
         try
         {
@@ -157,9 +164,10 @@ public sealed partial class ScannerEngine
             // second pass. Macro NDB entries are logical-signature ingredients and are
             // already covered when logical signatures are evaluated.
             var requiresFullNdbEvaluation = applicableRawNdb.Any(x => !streamableNdb.Contains(x));
-            var requiresContainerExpansion = ScanTypePolicy.IsArchiveContainer(rootType);
+            var requiresContainerExpansion = ScanTypePolicy.IsArchiveContainer(rootType) &&
+                                             ScanTypePolicy.ShouldParseContainer(rootType, options);
             var requiresMachOFat = ScanTypePolicy.IsMachO(rootType) && ScanTypePolicy.LooksLikeMachOFat(probe);
-            var requiresSpecializedPreRaw = ScanTypePolicy.RequiresSpecializedPreRaw(rootType) &&
+            var requiresSpecializedPreRaw = ScanTypePolicy.ShouldRunSpecializedPreRaw(rootType, options) &&
                                             (!(rootType.Equals("HTML", StringComparison.OrdinalIgnoreCase) ||
                                                rootType.Equals("HTML_UTF16", StringComparison.OrdinalIgnoreCase)) ||
                                              info.Length <= options.Limits.MaxHtmlNormalize);
@@ -169,7 +177,7 @@ public sealed partial class ScannerEngine
             // load it once, scan the container first, and reuse the same bytes for the
             // raw matcher and later target-specific passes. PE/ELF/Mach-O keep the raw-
             // first path, matching cli_magic_scan()'s executable ordering.
-            var requiresPeFullBuffer = peImportRules.Length != 0 && ScanTypePolicy.IsPe(rootType);
+            var requiresPeFullBuffer = options.ScanPE && peImportRules.Length != 0 && ScanTypePolicy.IsPe(rootType);
             var requiresLogicalFullBuffer = HasApplicableLogicalSignatures(
                 logicalSignatures,
                 signatureFileType,
@@ -178,12 +186,24 @@ public sealed partial class ScannerEngine
                                   requiresPeFullBuffer || requiresContainerExpansion ||
                                   requiresMachOFat || requiresSpecializedPreRaw ||
                                   options.ContentScanners.Count != 0;
+            // A feature requiring materialization must not stop the raw signature pass
+            // merely because its buffer budget is exhausted. Continue streaming the
+            // original object and report that secondary inspection was incomplete.
+            var fullBufferLimitExceeded = needsFullBuffer && info.Length > options.Limits.MaxFullBufferSize;
+            if (fullBufferLimitExceeded) needsFullBuffer = false;
+
             byte[]? fullData = null;
             var containerPreScanned = false;
             var detections = new List<Detection>();
-
-            if (needsFullBuffer && info.Length > options.Limits.MaxFullBufferSize)
-                return new ScanResult(ScanVerdict.Error, path, rootType, [], 0, started.Elapsed, state.Database.Databases.FirstOrDefault());
+            if (fullBufferLimitExceeded && options.EnableHeuristics && options.HeuristicExceedsMax)
+            {
+                detections.Add(new Detection(
+                    "Heuristics.Limits.Exceeded",
+                    SignatureType.Metadata,
+                    null,
+                    "scan-options",
+                    $"File size {info.Length} exceeds the materialization limit {options.Limits.MaxFullBufferSize}; raw signature scanning continues, but one or more secondary scan stages were skipped."));
+            }
 
             // If a whole-file buffer is already needed for subsequent operations, read it once upfront
             // to avoid reading the file twice from disk.
@@ -192,7 +212,7 @@ public sealed partial class ScannerEngine
                 fullData = await ReadFullFileAsync(path, info.Length, cancellationToken);
             }
 
-            if (requiresContainerExpansion)
+            if (requiresContainerExpansion && fullData is not null)
             {
                 var fullRootType = DetectType(fullData!, path, state.Database.SpecialDatabases.FileTypes);
                 if (!string.Equals(rootType, fullRootType, StringComparison.OrdinalIgnoreCase))
@@ -207,16 +227,16 @@ public sealed partial class ScannerEngine
 
                 detections.AddRange(ArchiveScanner.Scan(fullData!, path, state, options, [], 0, cancellationToken, rootType));
                 containerPreScanned = true;
-                if (!options.CollectAllMatches && detections.Count != 0)
-                    return new ScanResult(ScanVerdict.Malicious, path, rootType, detections.Take(1).ToArray(), info.Length, started.Elapsed, state.Database.Databases.FirstOrDefault());
+                if (!options.CollectAllMatches && options.HasBlockingDetections(detections))
+                    return CreateDetectionResult(path, rootType, detections, info.Length, started.Elapsed, state.Database.Databases.FirstOrDefault(), options);
             }
 
-            if (requiresSpecializedPreRaw)
+            if (requiresSpecializedPreRaw && fullData is not null)
             {
                 detections.AddRange(SpecializedFileHandlers.ScanPreRaw(
                     fullData!, rootType, state, options, path, cancellationToken));
-                if (!options.CollectAllMatches && detections.Count != 0)
-                    return new ScanResult(ScanVerdict.Malicious, path, rootType, detections.Take(1).ToArray(), info.Length, started.Elapsed, state.Database.Databases.FirstOrDefault());
+                if (!options.CollectAllMatches && options.HasBlockingDetections(detections))
+                    return CreateDetectionResult(path, rootType, detections, info.Length, started.Elapsed, state.Database.Databases.FirstOrDefault(), options);
             }
 
             (IReadOnlyList<Detection> Detections, bool Trusted, long BytesRead) rawMatch;
@@ -230,7 +250,7 @@ public sealed partial class ScannerEngine
                     fullData,
                     "compiled-database",
                     includeNdb: useCombinedNdbIndex,
-                    collectAllMatches: options.CollectAllMatches,
+                    collectAllMatches: (options.CollectAllMatches || !options.DetectPUA),
                     ndbFilter: useCombinedNdbIndex ? streamableNdb.Contains : null,
                     ndbPatternCandidates: containerPreScanned ? null : matchedFixedNdbCandidates,
                     ndbCandidateFilter: containerPreScanned ? null : fixedNdbCandidateRules.Contains),
@@ -248,7 +268,7 @@ public sealed partial class ScannerEngine
                     "compiled-database",
                     cancellationToken,
                     includeNdb: streamableNdb.Count != 0,
-                    collectAllMatches: options.CollectAllMatches,
+                    collectAllMatches: (options.CollectAllMatches || !options.DetectPUA),
                     ndbFilter: streamableNdb.Count == 0 ? null : streamableNdb.Contains);
             }
 
@@ -260,10 +280,10 @@ public sealed partial class ScannerEngine
             }
 
             detections.AddRange(rawMatch.Detections);
-            if (!options.CollectAllMatches && detections.Count != 0)
-                return new ScanResult(ScanVerdict.Malicious, path, rootType, detections.Take(1).ToArray(), rawMatch.BytesRead, started.Elapsed, state.Database.Databases.FirstOrDefault());
+            if (!options.CollectAllMatches && options.HasBlockingDetections(detections))
+                return CreateDetectionResult(path, rootType, detections, rawMatch.BytesRead, started.Elapsed, state.Database.Databases.FirstOrDefault(), options);
 
-            var specializedRules = peSectionRules.Length != 0 || peImportRules.Length != 0;
+            var specializedRules = options.ScanPE && (peSectionRules.Length != 0 || peImportRules.Length != 0);
             // PE section hashes are streamed section-by-section. Import hashes still
             // require a structurally complete PE image, so only .imp forces a whole
             // file materialization here.
@@ -296,9 +316,10 @@ public sealed partial class ScannerEngine
                         fullData,
                         options.Limits,
                         signatureFileType,
-                        cancellationToken));
-                    if (!options.CollectAllMatches && detections.Count != 0)
-                        return new ScanResult(ScanVerdict.Malicious, path, rootType, detections.Take(1).ToArray(), rawMatch.BytesRead, started.Elapsed, state.Database.Databases.FirstOrDefault());
+                        cancellationToken,
+                        scanOptions: options));
+                    if (!options.CollectAllMatches && options.HasBlockingDetections(detections))
+                        return CreateDetectionResult(path, rootType, detections, rawMatch.BytesRead, started.Elapsed, state.Database.Databases.FirstOrDefault(), options);
                     var applicableLogical = logicalSignatures
                         .Where(x => LdbRuntime.TargetMatchesFileType(x.Target?.Target ?? 0, signatureFileType) &&
                                     (x.Target?.MinFileSize is null || fullData.Length >= x.Target.MinFileSize.Value) &&
@@ -306,69 +327,71 @@ public sealed partial class ScannerEngine
                         .ToArray();
 
                     detections.AddRange(EvaluateLogical(applicableLogical, ndbSignatures, fullData, options.Limits, signatureFileType, state.Database.IconDatabase, [], cancellationToken, scanState: state, scanOptions: options));
-                    if (!options.CollectAllMatches && detections.Count != 0)
-                        return new ScanResult(ScanVerdict.Malicious, path, rootType, detections.Take(1).ToArray(), rawMatch.BytesRead, started.Elapsed, state.Database.Databases.FirstOrDefault());
+                    if (!options.CollectAllMatches && options.HasBlockingDetections(detections))
+                        return CreateDetectionResult(path, rootType, detections, rawMatch.BytesRead, started.Elapsed, state.Database.Databases.FirstOrDefault(), options);
                 }
                 if (specializedRules)
                 {
-                    if (ScanTypePolicy.IsPe(rootType))
+                    if (options.ScanPE && ScanTypePolicy.IsPe(rootType))
                         detections.AddRange(PeSpecializedMatcher.Match(fullData, state, options.Limits, cancellationToken));
-                    if (!options.CollectAllMatches && detections.Count != 0)
-                        return new ScanResult(ScanVerdict.Malicious, path, rootType, detections.Take(1).ToArray(), rawMatch.BytesRead, started.Elapsed, state.Database.Databases.FirstOrDefault());
+                    if (!options.CollectAllMatches && options.HasBlockingDetections(detections))
+                        return CreateDetectionResult(path, rootType, detections, rawMatch.BytesRead, started.Elapsed, state.Database.Databases.FirstOrDefault(), options);
                 }
                 foreach (var contentScanner in options.ContentScanners)
                 {
                     detections.AddRange(contentScanner.Scan(fullData, path, cancellationToken));
-                    if (!options.CollectAllMatches && detections.Count != 0)
-                        return new ScanResult(ScanVerdict.Malicious, path, rootType, detections.Take(1).ToArray(), rawMatch.BytesRead, started.Elapsed, state.Database.Databases.FirstOrDefault());
+                    if (!options.CollectAllMatches && options.HasBlockingDetections(detections))
+                        return CreateDetectionResult(path, rootType, detections, rawMatch.BytesRead, started.Elapsed, state.Database.Databases.FirstOrDefault(), options);
                 }
-                if (ScanTypePolicy.IsPe(rootType))
+                if (options.ScanPE && ScanTypePolicy.IsPe(rootType))
                 {
                     detections.AddRange(PeOverlayScanner.ScanPeOverlay(fullData, state, options, cancellationToken));
-                    if (!options.CollectAllMatches && detections.Count != 0)
-                        return new ScanResult(ScanVerdict.Malicious, path, rootType, detections.Take(1).ToArray(), rawMatch.BytesRead, started.Elapsed, state.Database.Databases.FirstOrDefault());
+                    if (!options.CollectAllMatches && options.HasBlockingDetections(detections))
+                        return CreateDetectionResult(path, rootType, detections, rawMatch.BytesRead, started.Elapsed, state.Database.Databases.FirstOrDefault(), options);
                 }
                 if (requiresMachOFat || (ScanTypePolicy.IsMachO(rootType) && ScanTypePolicy.LooksLikeMachOFat(fullData)))
                 {
                     detections.AddRange(ScanMachOFatSlices(fullData, state, options, cancellationToken));
-                    if (!options.CollectAllMatches && detections.Count != 0)
-                        return new ScanResult(ScanVerdict.Malicious, path, rootType, detections.Take(1).ToArray(), rawMatch.BytesRead, started.Elapsed, state.Database.Databases.FirstOrDefault());
+                    if (!options.CollectAllMatches && options.HasBlockingDetections(detections))
+                        return CreateDetectionResult(path, rootType, detections, rawMatch.BytesRead, started.Elapsed, state.Database.Databases.FirstOrDefault(), options);
                 }
                 if (requiresContainerExpansion && !containerPreScanned)
                 {
                     detections.AddRange(ArchiveScanner.Scan(fullData, path, state, options, [], 0, cancellationToken));
-                    if (!options.CollectAllMatches && detections.Count != 0)
-                        return new ScanResult(ScanVerdict.Malicious, path, rootType, detections.Take(1).ToArray(), rawMatch.BytesRead, started.Elapsed, state.Database.Databases.FirstOrDefault());
+                    if (!options.CollectAllMatches && options.HasBlockingDetections(detections))
+                        return CreateDetectionResult(path, rootType, detections, rawMatch.BytesRead, started.Elapsed, state.Database.Databases.FirstOrDefault(), options);
                 }
             }
 
-            if (fullData is null && ScanTypePolicy.IsPe(rootType) && peSectionRules.Length != 0 &&
+            if (fullData is null && options.ScanPE && ScanTypePolicy.IsPe(rootType) && peSectionRules.Length != 0 &&
                 (state.Database.DynamicConfiguration.Pe & DynamicConfigFlags.PeMd5Sect) != 0)
             {
                 var sectionHits = await PeSpecializedMatcher.MatchSectionsFromFileAsync(path, info.Length, peSectionRules, options.Limits.MaxPatternMatchesPerSignature, cancellationToken);
                 detections.AddRange(sectionHits);
-                if (!options.CollectAllMatches && detections.Count != 0)
-                    return new ScanResult(ScanVerdict.Malicious, path, rootType, detections.Take(1).ToArray(), rawMatch.BytesRead, started.Elapsed, state.Database.Databases.FirstOrDefault());
+                if (!options.CollectAllMatches && options.HasBlockingDetections(detections))
+                    return CreateDetectionResult(path, rootType, detections, rawMatch.BytesRead, started.Elapsed, state.Database.Databases.FirstOrDefault(), options);
             }
 
-            if (fullData is null && ScanTypePolicy.IsPe(rootType))
+            if (fullData is null && options.ScanPE && ScanTypePolicy.IsPe(rootType))
             {
                 var overlayHits = await PeOverlayScanner.ScanPeOverlayFromFileAsync(path, info.Length, state, options, cancellationToken);
                 detections.AddRange(overlayHits);
-                if (!options.CollectAllMatches && detections.Count != 0)
-                    return new ScanResult(ScanVerdict.Malicious, path, rootType, detections.Take(1).ToArray(), rawMatch.BytesRead, started.Elapsed, state.Database.Databases.FirstOrDefault());
+                if (!options.CollectAllMatches && options.HasBlockingDetections(detections))
+                    return CreateDetectionResult(path, rootType, detections, rawMatch.BytesRead, started.Elapsed, state.Database.Databases.FirstOrDefault(), options);
             }
 
-            var distinct = detections
-                .GroupBy(x => x.Name, StringComparer.OrdinalIgnoreCase)
-                .Select(x => x.First())
-                .ToArray();
-
-            var verdict = rawMatch.Trusted && distinct.Length == 0
-                ? ScanVerdict.Trusted
-                : distinct.Length == 0 ? ScanVerdict.Clean : ScanVerdict.Malicious;
-
-            return new ScanResult(verdict, path, rootType, distinct, rawMatch.BytesRead, started.Elapsed, state.Database.Databases.FirstOrDefault());
+            var finalResult = CreateDetectionResult(
+                path,
+                rootType,
+                detections,
+                rawMatch.BytesRead,
+                started.Elapsed,
+                state.Database.Databases.FirstOrDefault(),
+                options,
+                trusted: rawMatch.Trusted);
+            if (fullBufferLimitExceeded && !(options.EnableHeuristics && options.HeuristicExceedsMax) && finalResult.Verdict == ScanVerdict.Clean)
+                return finalResult with { Verdict = ScanVerdict.Error };
+            return finalResult;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -386,6 +409,30 @@ public sealed partial class ScannerEngine
         {
             return new ScanResult(ScanVerdict.Error, path, DetectType(path), [], 0, started.Elapsed, _databaseManager.Current.Database.Databases.FirstOrDefault());
         }
+    }
+
+    internal static ScanResult CreateDetectionResult(
+        string path,
+        string? fileType,
+        IEnumerable<Detection> detections,
+        long bytesScanned,
+        TimeSpan duration,
+        DatabaseInfo? database,
+        ScanOptions options,
+        bool trusted = false)
+    {
+        var visible = options.FilterDetections(detections);
+        if (trusted && visible.Count == 0)
+            return new ScanResult(ScanVerdict.Trusted, path, fileType, [], bytesScanned, duration, database);
+
+        var verdict = visible.Count == 0
+            ? ScanVerdict.Clean
+            : visible.Any(x => !ScanOptions.IsPuaName(x.Name) && !ScanTypePolicy.IsHeuristic(x))
+                ? ScanVerdict.Malicious
+                : visible.Any(x => ScanOptions.IsPuaName(x.Name))
+                    ? ScanVerdict.PotentiallyUnwanted
+                    : ScanVerdict.StrongIndicator;
+        return new ScanResult(verdict, path, fileType, visible, bytesScanned, duration, database);
     }
 
     private static bool HasApplicableLogicalSignatures(
@@ -436,9 +483,41 @@ public sealed partial class ScannerEngine
         var effective = new ScanOptions
         {
             CollectAllMatches = options.CollectAllMatches,
-            Limits = options.Limits,
+            Limits = options.CreateEffectiveLimits(),
             YaraRuleDirectory = options.YaraRuleDirectory,
-            BytecodeDirectory = options.BytecodeDirectory
+            BytecodeDirectory = options.BytecodeDirectory,
+            ScanArchive = options.ScanArchive,
+            ScanELF = options.ScanELF,
+            ScanPDF = options.ScanPDF,
+            ScanSWF = options.ScanSWF,
+            ScanHWP3 = options.ScanHWP3,
+            ScanXMLDocs = options.ScanXMLDocs,
+            ScanMail = options.ScanMail,
+            ScanOLE2 = options.ScanOLE2,
+            ScanHTML = options.ScanHTML,
+            ScanPE = options.ScanPE,
+            ScanOneNote = options.ScanOneNote,
+            ScanImage = options.ScanImage,
+            ScanImageFuzzyHash = options.ScanImageFuzzyHash,
+            EnableHeuristics = options.EnableHeuristics,
+            HeuristicPrecedence = options.HeuristicPrecedence,
+            HeuristicExceedsMax = options.HeuristicExceedsMax,
+            HeuristicEncryptedArchive = options.HeuristicEncryptedArchive,
+            HeuristicEncryptedDoc = options.HeuristicEncryptedDoc,
+            DetectPUA = options.DetectPUA,
+            MaxFileSize = options.MaxFileSize,
+            MaxScanSize = options.MaxScanSize,
+            MaxFiles = options.MaxFiles,
+            MaxRecursion = options.MaxRecursion,
+            UseMultithreading = options.UseMultithreading,
+            MaxThreads = options.MaxThreads,
+            Verbose = options.Verbose,
+            ShowProgress = options.ShowProgress,
+            InfectedOnly = options.InfectedOnly,
+            Recursive = options.Recursive,
+            FollowSymlinks = options.FollowSymlinks,
+            ExcludeDirectories = [.. options.ExcludeDirectories],
+            ExcludeExtensions = [.. options.ExcludeExtensions]
         };
         foreach (var scanner in options.ContentScanners) effective.ContentScanners.Add(scanner);
         if (!string.IsNullOrWhiteSpace(options.YaraRuleDirectory)

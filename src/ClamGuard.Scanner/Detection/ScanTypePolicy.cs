@@ -1,3 +1,4 @@
+using ClamGuard.Core;
 using ClamGuard.Signatures;
 
 namespace ClamGuard.Scanner;
@@ -12,9 +13,8 @@ internal static class ScanTypePolicy
 {
     private static readonly HashSet<string> ArchiveTypes = new(StringComparer.OrdinalIgnoreCase)
     {
-        // Keep this list aligned with handlers that ArchiveScanner can actually
-        // dispatch to. File types such as ONENOTE/XML/HWP3 need dedicated native
-        // parsers; marking them as generic containers would only force RAM use.
+        // Types expanded by ArchiveScanner. Parser choice remains independent
+        // and is made by ShouldParseContainer below using native-style switches.
         "ZIP", "ZIPSFX", "GZ", "BZ", "XZ", "RAR", "RARSFX", "7Z", "7ZSFX", "ARJ", "ARJSFX",
         "CAB", "CABSFX", "CHM", "ISO", "UDF", "XAR", "DMG", "LHA", "LHA_LZH", "EGG", "EGGSFX",
         "ALZ", "SIS", "NULSFT", "AUTOIT", "ISHIELD_MSI", "SZDD", "MSSZDD", "MSCAB", "MSCHM",
@@ -24,6 +24,44 @@ internal static class ScanTypePolicy
     };
 
     public static bool IsArchiveContainer(string fileType) => ArchiveTypes.Contains(fileType);
+
+    /// <summary>
+    /// Whether a file-type parser should run. Disabling a parser never disables the
+    /// raw signature pass; it only skips that type's additional decoding/inspection.
+    /// </summary>
+    public static bool ShouldParseContainer(string fileType, ScanOptions options)
+    {
+        var type = fileType.ToUpperInvariant();
+        // Keep these mappings aligned with CL_SCAN_PARSE_* in ClamAV 1.5.4.
+        // Native ClamAV treats OOXML as two independent operations: XMLDOCS
+        // optionally processes OOXML metadata, while extraction/scanning of its
+        // ZIP members is controlled by ARCHIVE. XML_WORD/XML_XL/XML_HWP use the
+        // document parser switch directly.
+        if (type is "PDF" or "XDP") return options.ScanPDF;
+        if (type is "HTML" or "HTML_UTF16") return options.ScanHTML;
+        if (type is "MAIL" or "MHTML" or "TNEF") return options.ScanMail;
+        // Native CL_TYPE_UUENCODED dispatch is controlled by DCONF_OTHER / UUENC,
+        // not CL_SCAN_PARSE_MAIL. Its capability check remains in ArchiveScanner.
+        if (type is "UUENCODED") return true;
+        if (type is "FLASH" or "SWF") return options.ScanSWF;
+        if (type is "HWP3") return options.ScanHWP3;
+        if (type is "ONENOTE") return options.ScanOneNote;
+        if (type is "XML_WORD" or "XML_XL" or "XML_HWP") return options.ScanXMLDocs;
+        if (type is "OOXML_WORD" or "OOXML_PPT" or "OOXML_XL" or "OOXML_HWP") return options.ScanArchive;
+        if (type is "OLE2" or "MSOLE2" or "HWPOLE2") return options.ScanOLE2;
+        // Native ClamAV dispatches RTF and BinHex through CL_SCAN_PARSE_ARCHIVE,
+        // not CL_SCAN_PARSE_OLE2 / CL_SCAN_PARSE_MAIL.
+        if (type is "RTF" or "BINHEX") return options.ScanArchive;
+        if (IsPe(type)) return options.ScanPE;
+        if (IsElf(type)) return options.ScanELF;
+        return options.ScanArchive;
+    }
+
+    public static bool ShouldRunSpecializedPreRaw(string fileType, ScanOptions options)
+        => RequiresSpecializedPreRaw(fileType) && ShouldParseContainer(fileType, options);
+
+    public static bool IsHeuristic(Detection detection)
+        => detection.Name.StartsWith("Heuristics.", StringComparison.OrdinalIgnoreCase);
 
     public static bool IsPe(string fileType)
         => fileType.Equals("PE", StringComparison.OrdinalIgnoreCase) ||
@@ -46,6 +84,8 @@ internal static class ScanTypePolicy
            fileType.Equals("HTML_UTF16", StringComparison.OrdinalIgnoreCase) ||
            fileType.Equals("ONENOTE", StringComparison.OrdinalIgnoreCase) ||
            fileType.Equals("XDP", StringComparison.OrdinalIgnoreCase) ||
+           fileType.Equals("XML_WORD", StringComparison.OrdinalIgnoreCase) ||
+           fileType.Equals("XML_XL", StringComparison.OrdinalIgnoreCase) ||
            fileType.Equals("XML_HWP", StringComparison.OrdinalIgnoreCase);
 
     public static bool RequiresSpecializedPostRaw(string fileType)

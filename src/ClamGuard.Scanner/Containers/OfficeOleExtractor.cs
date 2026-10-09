@@ -41,8 +41,13 @@ internal static class OfficeOleExtractor
         foreach (var stream in reader.Streams)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (budget.Entries++ >= options.Limits.MaxArchiveEntries) break;
-            if (stream.Size == 0 || stream.Size > (ulong)options.Limits.MaxFileSize) continue;
+            if (budget.Entries++ >= options.Limits.MaxArchiveEntries) { budget.LimitExceeded = true; break; }
+            if (stream.Size == 0) continue;
+            if (stream.Size > (ulong)options.Limits.MaxFileSize)
+            {
+                budget.LimitExceeded = true;
+                continue;
+            }
             if (!reader.TryReadStream(stream, out var child)) continue;
 
             var specialHwpStream = hwp5 is not null && IsHwp5ContentStream(stream.Name);
@@ -56,7 +61,7 @@ internal static class OfficeOleExtractor
 
             if (!ArchiveScanner.ConsumeBudget(budget, options.Limits, child.Length)) break;
             results.AddRange(ArchiveScanner.ScanChild(child, stream.Name, "OLE2", state, options, parents, depth, budget, cancellationToken));
-            if (!options.CollectAllMatches && results.Count != 0) return results;
+            if (!options.CollectAllMatches && options.HasBlockingDetections(results)) return results;
         }
         return results;
     }
@@ -154,7 +159,10 @@ internal static class OfficeOleExtractor
                     {
                         if (decoded.Length >= options.Limits.MaxEmbeddedStreamSize ||
                             decoded.Length >= options.Limits.MaxFileSize - 1)
+                        {
+                            budget.LimitExceeded = true;
                             break;
+                        }
 
                         decoded.WriteByte((byte)((nibble << 4) | hex));
                         nibble = -1;
@@ -183,6 +191,9 @@ internal static class OfficeOleExtractor
             budget.Entries++;
             search = Math.Max(cursor, start + 1);
         }
+        if (budget.Entries >= options.Limits.MaxArchiveEntries && search < data.Length &&
+            data[search..].IndexOf(marker) >= 0)
+            budget.LimitExceeded = true;
 
         return results;
     }

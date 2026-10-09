@@ -41,11 +41,15 @@ internal static class MailDocumentExtractor
                 if (rle) {
                     rle = false;
                     if (value == 0) { decoded.WriteByte(0x90); last = 0x90; }
-                    else { var repeat = value - 1; if (repeat > options.Limits.MaxEmbeddedStreamSize - decoded.Length) return results; for (var n = 0; n < repeat; n++) decoded.WriteByte(last); }
+                    else { var repeat = value - 1; if (repeat > options.Limits.MaxEmbeddedStreamSize - decoded.Length) { budget.LimitExceeded = true; return results; } for (var n = 0; n < repeat; n++) decoded.WriteByte(last); }
                 }
                 else if (value == 0x90) rle = true;
                 else { decoded.WriteByte(value); last = value; }
-                if (decoded.Length > options.Limits.MaxEmbeddedStreamSize || decoded.Length > options.Limits.MaxFileSize) return results;
+                if (decoded.Length > options.Limits.MaxEmbeddedStreamSize || decoded.Length > options.Limits.MaxFileSize)
+                {
+                    budget.LimitExceeded = true;
+                    return results;
+                }
             }
         }
         var raw = decoded.ToArray();
@@ -60,9 +64,35 @@ internal static class MailDocumentExtractor
         if ((ulong)dataStart + dataLen + 2UL > (ulong)raw.Length) return results;
         var name = nameLen == 0 ? "binhex-data" : Encoding.ASCII.GetString(raw, 1, nameLen);
         var dataCount = (int)Math.Min((ulong)dataLen, (ulong)options.Limits.MaxFileSize);
-        if (dataCount > 0) { var fork = raw.AsSpan(dataStart, dataCount).ToArray(); if (ArchiveScanner.ConsumeBudget(budget, options.Limits, fork.Length)) results.AddRange(ArchiveScanner.ScanChild(fork, name, "BINHEX", state, options, parents, depth, budget, cancellationToken)); }
+        if (dataLen > (uint)dataCount) budget.LimitExceeded = true;
+        if (dataCount > 0)
+        {
+            if (budget.Entries >= options.Limits.MaxArchiveEntries) budget.LimitExceeded = true;
+            else
+            {
+                var fork = raw.AsSpan(dataStart, dataCount).ToArray();
+                if (ArchiveScanner.ConsumeBudget(budget, options.Limits, fork.Length))
+                {
+                    budget.Entries++;
+                    results.AddRange(ArchiveScanner.ScanChild(fork, name, "BINHEX", state, options, parents, depth, budget, cancellationToken));
+                }
+            }
+        }
         var resourceStart = dataStart + (int)dataLen + 2;
-        if ((ulong)resourceStart + resLen + 2UL <= (ulong)raw.Length && resLen > 0 && resLen <= (uint)options.Limits.MaxEmbeddedStreamSize) { var fork = raw.AsSpan(resourceStart, (int)resLen).ToArray(); if (ArchiveScanner.ConsumeBudget(budget, options.Limits, fork.Length)) results.AddRange(ArchiveScanner.ScanChild(fork, name + ".rsrc", "BINHEX", state, options, parents, depth, budget, cancellationToken)); }
+        if ((ulong)resourceStart + resLen + 2UL <= (ulong)raw.Length && resLen > 0 && resLen <= (uint)options.Limits.MaxEmbeddedStreamSize)
+        {
+            if (budget.Entries >= options.Limits.MaxArchiveEntries) budget.LimitExceeded = true;
+            else
+            {
+                var fork = raw.AsSpan(resourceStart, (int)resLen).ToArray();
+                if (ArchiveScanner.ConsumeBudget(budget, options.Limits, fork.Length))
+                {
+                    budget.Entries++;
+                    results.AddRange(ArchiveScanner.ScanChild(fork, name + ".rsrc", "BINHEX", state, options, parents, depth, budget, cancellationToken));
+                }
+            }
+        }
+        else if (resLen > options.Limits.MaxEmbeddedStreamSize) budget.LimitExceeded = true;
         return results;
     }
 
@@ -76,11 +106,16 @@ internal static class MailDocumentExtractor
             if (!started) { if (!line.StartsWith("begin ", StringComparison.Ordinal)) continue; var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries); if (parts.Length < 3) return results; fileName = parts[2]; started = true; continue; }
             if (line.Equals("end", StringComparison.OrdinalIgnoreCase)) break; if (line.Length == 0) continue;
             var expected = (line[0] - ' ') & 0x3f; if (expected == 0) continue; var i = 1; var produced = 0;
-            while (i + 3 < line.Length && produced < expected) { var c0=UuValue(line[i++]); var c1=UuValue(line[i++]); var c2=UuValue(line[i++]); var c3=UuValue(line[i++]); if (produced < expected) { output.WriteByte((byte)((c0<<2)|(c1>>4))); produced++; } if (produced < expected) { output.WriteByte((byte)((c1<<4)|(c2>>2))); produced++; } if (produced < expected) { output.WriteByte((byte)((c2<<6)|c3)); produced++; } if (output.Length > options.Limits.MaxFileSize || output.Length > options.Limits.MaxEmbeddedStreamSize) return results; }
+            while (i + 3 < line.Length && produced < expected) { var c0=UuValue(line[i++]); var c1=UuValue(line[i++]); var c2=UuValue(line[i++]); var c3=UuValue(line[i++]); if (produced < expected) { output.WriteByte((byte)((c0<<2)|(c1>>4))); produced++; } if (produced < expected) { output.WriteByte((byte)((c1<<4)|(c2>>2))); produced++; } if (produced < expected) { output.WriteByte((byte)((c2<<6)|c3)); produced++; } if (output.Length > options.Limits.MaxFileSize || output.Length > options.Limits.MaxEmbeddedStreamSize) { budget.LimitExceeded = true; return results; } }
             if (produced != expected) break;
         }
-        if (!started || output.Length == 0) return results; var child = output.ToArray(); if (!ArchiveScanner.ConsumeBudget(budget, options.Limits, child.Length)) return results;
-        results.AddRange(ArchiveScanner.ScanChild(child, fileName ?? "uuencoded", "UUENCODED", state, options, parents, depth, budget, cancellationToken)); return results;
+        if (!started || output.Length == 0) return results;
+        if (budget.Entries >= options.Limits.MaxArchiveEntries) { budget.LimitExceeded = true; return results; }
+        var child = output.ToArray();
+        if (!ArchiveScanner.ConsumeBudget(budget, options.Limits, child.Length)) return results;
+        budget.Entries++;
+        results.AddRange(ArchiveScanner.ScanChild(child, fileName ?? "uuencoded", "UUENCODED", state, options, parents, depth, budget, cancellationToken));
+        return results;
     }
 
     private static int UuValue(char c) => c < ' ' || c > '`' ? 0 : (c - ' ') & 0x3f;
@@ -90,14 +125,29 @@ internal static class MailDocumentExtractor
     {
         var results = new List<Detection>(); if (data.Length < 6 || BinaryPrimitives.ReadUInt32LittleEndian(data[..4]) != 0x223E9F78u) return results;
         var pos = 6; MemoryStream? attachment = null; string? attachmentName = null;
-        void FlushAttachment() { if (attachment is null || attachment.Length == 0) return; var child=attachment.ToArray(); if (ArchiveScanner.ConsumeBudget(budget, options.Limits, child.Length)) results.AddRange(ArchiveScanner.ScanChild(child, attachmentName ?? "tnef-attachment", "TNEF", state, options, parents, depth, budget, cancellationToken)); attachment.Dispose(); attachment=null; attachmentName=null; }
+        void FlushAttachment()
+        {
+            if (attachment is null || attachment.Length == 0) return;
+            var child = attachment.ToArray();
+            if (budget.Entries >= options.Limits.MaxArchiveEntries) budget.LimitExceeded = true;
+            else if (ArchiveScanner.ConsumeBudget(budget, options.Limits, child.Length))
+            {
+                budget.Entries++;
+                results.AddRange(ArchiveScanner.ScanChild(child, attachmentName ?? "tnef-attachment", "TNEF", state, options, parents, depth, budget, cancellationToken));
+            }
+            attachment.Dispose(); attachment = null; attachmentName = null;
+        }
         while (pos + 11 <= data.Length && budget.Entries < options.Limits.MaxArchiveEntries)
         {
             cancellationToken.ThrowIfCancellationRequested(); var level=data[pos++]; var typeTag=BinaryPrimitives.ReadUInt32LittleEndian(data.Slice(pos,4)); pos+=4; var tag=(ushort)(typeTag & 0xffff); var length=BinaryPrimitives.ReadInt32LittleEndian(data.Slice(pos,4)); pos+=4;
-            if (length < 0 || length > options.Limits.MaxFileSize || pos + (long)length + 2 > data.Length) break; var value=data.Slice(pos,length); pos += length + 2;
+            if (length < 0 || pos + (long)length + 2 > data.Length) break;
+            if (length > options.Limits.MaxFileSize) { budget.LimitExceeded = true; break; }
+            var value=data.Slice(pos,length); pos += length + 2;
             if (level==2 && tag==0x800f) { attachment ??= new MemoryStream(); if (attachment.Length + value.Length > options.Limits.MaxEmbeddedStreamSize) { FlushAttachment(); continue; } attachment.Write(value); }
             else if (level==2 && tag==0x8010) { if (attachment is not null && attachment.Length > 0 && attachmentName is not null) FlushAttachment(); attachmentName=Encoding.ASCII.GetString(value).TrimEnd('\0',' ','\r','\n'); }
         }
+        if (pos + 11 <= data.Length && budget.Entries >= options.Limits.MaxArchiveEntries)
+            budget.LimitExceeded = true;
         FlushAttachment(); return results;
     }
 
@@ -105,7 +155,12 @@ internal static class MailDocumentExtractor
         ReadOnlySpan<byte> data, string mailType, CompiledState state, ScanOptions options, IReadOnlyList<string> parents, int depth, ArchiveScanBudget budget, CancellationToken cancellationToken)
     {
         var results = new List<Detection>();
-        if (depth >= Math.Max(1, options.Limits.MaxArchiveDepth) || data.Length == 0) return results;
+        if (depth >= Math.Max(1, options.Limits.MaxArchiveDepth))
+        {
+            budget.LimitExceeded = true;
+            return results;
+        }
+        if (data.Length == 0) return results;
         var text = Encoding.Latin1.GetString(data);
         var headerEnd = ArchiveScanner.FindHeaderEnd(text);
         if (headerEnd < 0) return results;
@@ -146,6 +201,17 @@ internal static class MailDocumentExtractor
                 results.AddRange(ArchiveScanner.ScanChild(decoded, childName, mailType, state, options, parents, depth, budget, cancellationToken));
             }
             search = partEndMarker + marker.Length;
+        }
+        if (budget.Entries >= options.Limits.MaxArchiveEntries && search < body.Length)
+        {
+            var nextMarker = body.IndexOf(marker, search, StringComparison.Ordinal);
+            if (nextMarker >= 0)
+            {
+                nextMarker += marker.Length;
+                while (nextMarker < body.Length && (body[nextMarker] is '\r' or '\n' or ' ' or '\t')) nextMarker++;
+                if (nextMarker + 2 > body.Length || !body[nextMarker..].StartsWith("--", StringComparison.Ordinal))
+                    budget.LimitExceeded = true;
+            }
         }
         return results;
     }

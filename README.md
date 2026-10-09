@@ -36,6 +36,60 @@ dotnet run --project .\tests\ClamGuard.Tests\ClamGuard.Tests.csproj --configurat
 
 The test project is an executable regression harness rather than a `dotnet test` test assembly. A successful run prints its success summary after all registered suites complete.
 
+## `ScanOptions` behavior
+
+`ScanOptions` is consumed by the scanner/host and by the folder-scanning service; its values are copied before execution so the host does not mutate a caller-owned options object. A typical library call is:
+
+```csharp
+var options = new ScanOptions
+{
+    DetectPUA = true,
+    CollectAllMatches = true,
+    ScanArchive = true,
+    ScanPE = true,
+    ScanELF = true,
+    ScanOLE2 = true,
+    ScanPDF = true,
+    ScanSWF = true,
+    ScanHWP3 = true,
+    ScanXMLDocs = true,
+    ScanOneNote = true,
+    ScanImage = true,
+    ScanImageFuzzyHash = true,
+    ScanHTML = true,
+    ScanMail = true,
+    EnableHeuristics = true,
+    HeuristicExceedsMax = true,
+    HeuristicEncryptedArchive = false,
+    HeuristicEncryptedDoc = false,
+    MaxFileSize = 100 * 1024 * 1024,
+    MaxScanSize = 250 * 1024 * 1024,
+    MaxFiles = 10_000,
+    MaxRecursion = 17,
+    UseMultithreading = true,
+    MaxThreads = Math.Max(1, Environment.ProcessorCount),
+    Recursive = true,
+    FollowSymlinks = false,
+    ExcludeDirectories = ["cache", "node_modules"],
+    ExcludeExtensions = [".tmp", ".bak"],
+    InfectedOnly = false,
+    ShowProgress = true,
+    Verbose = false
+};
+
+var results = await antivirus.ScanFolderAsync(folderPath, options, progress, cancellationToken);
+```
+
+- `CollectAllMatches` controls whether all distinct alert names are returned or a single primary result is selected. Malware signatures take precedence over PUA and heuristic-only alerts.
+- `DetectPUA` controls PUA visibility. The desktop service loads PUA databases so this can be selected per scan; PUA detections remain hidden when the option is `false`. Library callers loading the database directly must use `DatabaseManager.LoadAndCompile(..., includePua: true)` if they need PUA detection.
+- The parser switches independently mirror all 13 `CL_SCAN_PARSE_*` bits in ClamAV 1.5.4: `ScanArchive`, `ScanELF`, `ScanPDF`, `ScanSWF`, `ScanHWP3`, `ScanXMLDocs`, `ScanMail`, `ScanOLE2`, `ScanHTML`, `ScanPE`, `ScanOneNote`, `ScanImage`, and `ScanImageFuzzyHash`. The managed dispatch follows native assignments for special types (for example, XDP is governed by `ScanPDF`; HWP3 by `ScanHWP3`; HWPOLE2 by `ScanOLE2`; legacy MS Office XML and HWP-ML document parsing by `ScanXMLDocs`; RTF and BinHex by `ScanArchive`). As in native ClamAV, scanning members inside OOXML containers is controlled by `ScanArchive`; `ScanXMLDocs` corresponds to the separate OOXML metadata-processing option, but the managed result model does not currently expose that native metadata-collection feature. UUENCODED decoding follows its native dynamic configuration rather than `ScanMail`. The managed implementation currently uses `ScanImage` and `ScanImageFuzzyHash` to gate the supported LDB fuzzy-image path; it does not claim to include every native image parser. Disabling a format parser does not disable the raw-byte signature pass. `ScanELF` controls supported executable metadata handling; it does not imply a full native-equivalent ELF parser.
+- The implemented heuristic switches mirror the independent native options available in this managed scanner: `EnableHeuristics` (`CL_SCAN_GENERAL_HEURISTICS`), `HeuristicPrecedence` (`CL_SCAN_GENERAL_HEURISTIC_PRECEDENCE`), `HeuristicExceedsMax` (`CL_SCAN_HEURISTIC_EXCEEDS_MAX`), `HeuristicEncryptedArchive` (`CL_SCAN_HEURISTIC_ENCRYPTED_ARCHIVE`), and `HeuristicEncryptedDoc` (`CL_SCAN_HEURISTIC_ENCRYPTED_DOC`). The old `HeuristicScan` and `BlockEncrypted` members remain as compatibility aliases. `BlockEncrypted=true` enables both encrypted-content alerts; prefer the two individual settings for separate native-style control. Other libclamav heuristics (e.g., phishing cloak/SSL mismatch, macro alerts, partition inconsistency, structured-data DLP and broken-media checks) are not implemented by this managed engine and are intentionally not surfaced as no-op properties.
+- The default public limits are aligned with ClamAV 1.5.x defaults for `MaxFileSize` (100 MiB), `MaxScanSize` (400 MiB), `MaxFiles` (10,000), and `MaxRecursion` (17). `MaxFileSize` and `MaxScanSize` use 64-bit byte counts; zero/negative public size values recover to the documented safe defaults, and `MaxFileSize` is capped at 2 GiB to avoid integer overflow at the native limit. `MaxFileSize`, `MaxScanSize`, `MaxFiles`, and `MaxRecursion` are merged with `Limits`: the more restrictive ceiling wins. `Limits` also controls full-buffer materialization, archive-entry/depth/expanded-byte budgets, decompression ratio and time, PDF/embedded stream sizes, HTML/script normalization, streaming chunk size and logical-match complexity. When a file is too large to materialize for a secondary parser, the raw signature pass continues and an incomplete-scan alert/error is returned instead of silently skipping raw scanning.
+- Folder scanning applies `Recursive`, `FollowSymlinks`, `ExcludeDirectories`, `ExcludeExtensions`, `UseMultithreading`, `MaxThreads`, `ShowProgress`, `InfectedOnly`, and `Verbose`. If the directory contains more than `MaxFiles`, the first bounded set is scanned and an explicit limit result reports that additional files were skipped. Progress is emitted only when `ShowProgress` is enabled.
+- `YaraRuleDirectory`, `BytecodeDirectory`, and custom `ContentScanners` attach their optional scanners to the scan pipeline. As elsewhere in this project, supported YARA/bytecode syntax and behavior depend on the managed implementations and are not a promise of full libclamav parity.
+
+These controls make the options actionable, but they do **not** make ClamGuard.NET behavior identical to ClamAV native. Exact recognition parity has not been established here: it requires build/runtime tests and differential scans against the same native version, signature database, engine configuration, and clean/infected corpus. Unsupported formats and native parser/heuristic details can still produce different results.
+
 ## Run the desktop application
 
 On Windows, with the .NET 8 SDK installed:

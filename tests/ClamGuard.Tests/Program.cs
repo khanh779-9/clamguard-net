@@ -29,6 +29,7 @@ internal static partial class Program
         ArchiveDocumentTests();
         await YaraAndBytecodeTestsAsync();
         await SelfProtectionAndMetadataTestsAsync();
+        ScanOptionsBehaviorTests();
         Console.WriteLine("All tests passed.");
     }
 }

@@ -24,11 +24,11 @@ public sealed partial class ScannerEngine
         var data = buffer.AsSpan(0, length);
         var fileType = DetectType(data, path, state.Database.SpecialDatabases.FileTypes);
         var detections = new List<Detection>();
-        if (ScanTypePolicy.RequiresSpecializedPreRaw(fileType))
+        if (ScanTypePolicy.ShouldRunSpecializedPreRaw(fileType, options))
         {
             detections.AddRange(SpecializedFileHandlers.ScanPreRaw(data, fileType, state, options, path, cancellationToken));
-            if (!options.CollectAllMatches && detections.Count != 0)
-                return new ScanResult(ScanVerdict.Malicious, path, fileType, [detections[0]], length, TimeSpan.Zero, state.Database.Databases.FirstOrDefault());
+            if (!options.CollectAllMatches && options.HasBlockingDetections(detections))
+                return CreateDetectionResult(path, fileType, detections, length, TimeSpan.Zero, state.Database.Databases.FirstOrDefault(), options);
         }
         var ndb = state.Database.Signatures.OfType<NdbSignature>().ToArray();
         var applicableRawNdb = ndb
@@ -49,7 +49,7 @@ public sealed partial class ScannerEngine
             data,
             "compiled-database",
             includeNdb: useCombinedNdbIndex,
-            collectAllMatches: options.CollectAllMatches,
+            collectAllMatches: (options.CollectAllMatches || !options.DetectPUA),
             ndbFilter: useCombinedNdbIndex ? streamableNdb.Contains : null,
             ndbPatternCandidates: matchedFixedNdbCandidates,
             ndbCandidateFilter: fixedNdbCandidateRules.Contains));
@@ -62,24 +62,21 @@ public sealed partial class ScannerEngine
             data,
             options.Limits,
             fileType,
-            cancellationToken));
+            cancellationToken,
+            scanOptions: options));
         detections.AddRange(EvaluateLogical(state.Database.Signatures.OfType<LogicalSignature>(), ndb, data, options.Limits, fileType, state.Database.IconDatabase, [], cancellationToken, scanState: state, scanOptions: options));
-        if (ScanTypePolicy.IsPe(fileType))
+        if (options.ScanPE && ScanTypePolicy.IsPe(fileType))
             detections.AddRange(PeSpecializedMatcher.Match(data, state, options.Limits, cancellationToken));
         foreach (var contentScanner in options.ContentScanners)
             detections.AddRange(contentScanner.Scan(data, path, cancellationToken));
-        if (ScanTypePolicy.IsPe(fileType))
+        if (options.ScanPE && ScanTypePolicy.IsPe(fileType))
             detections.AddRange(PeOverlayScanner.ScanPeOverlay(data.ToArray(), state, options, cancellationToken));
         if (ScanTypePolicy.IsMachO(fileType) && ScanTypePolicy.LooksLikeMachOFat(data))
             detections.AddRange(ScanMachOFatSlices(buffer, length, state, options, cancellationToken));
-        if (ScanTypePolicy.IsArchiveContainer(fileType))
+        if (ScanTypePolicy.IsArchiveContainer(fileType) && ScanTypePolicy.ShouldParseContainer(fileType, options))
             detections.AddRange(ArchiveScanner.Scan(data, path, state, options, [], 0, cancellationToken));
-        var distinct = detections.GroupBy(x => x.Name, StringComparer.OrdinalIgnoreCase).Select(x => x.First()).ToArray();
         var trusted = state.Compiled.MatchesFalsePositive(data);
-        if (trusted && distinct.Length == 0)
-            return new ScanResult(ScanVerdict.Trusted, path, fileType, distinct, length, TimeSpan.Zero, state.Database.Databases.FirstOrDefault());
-        var verdict = distinct.Length == 0 ? ScanVerdict.Clean : ScanVerdict.Malicious;
-        return new ScanResult(verdict, path, fileType, distinct, length, TimeSpan.Zero, state.Database.Databases.FirstOrDefault());
+        return CreateDetectionResult(path, fileType, detections, length, TimeSpan.Zero, state.Database.Databases.FirstOrDefault(), options, trusted);
     }
 
     private static IReadOnlyList<Detection> ScanMachOFatSlices(
@@ -113,12 +110,13 @@ public sealed partial class ScannerEngine
                 continue;
             var type = DetectType(slice, "embedded.macho", state.Database.SpecialDatabases.FileTypes);
 
-            foreach (var hit in state.Compiled.Match(slice, $"mach-o-slice@{offset}", includeNdb: false))
+            foreach (var hit in state.Compiled.Match(slice, $"mach-o-slice@{offset}", includeNdb: false,
+                         collectAllMatches: (options.CollectAllMatches || !options.DetectPUA)))
                 results.Add(hit.Offset is null
                     ? hit
                     : hit with { Offset = hit.Offset.Value + offset });
 
-            foreach (var hit in EvaluateNdb(ndb, slice, options.Limits, type, cancellationToken))
+            foreach (var hit in EvaluateNdb(ndb, slice, options.Limits, type, cancellationToken, options))
                 results.Add(hit.Offset is null
                     ? hit
                     : hit with { Offset = hit.Offset.Value + offset });
@@ -128,7 +126,7 @@ public sealed partial class ScannerEngine
                     ? hit
                     : hit with { Offset = hit.Offset.Value + offset });
 
-            if (ScanTypePolicy.IsPe(type))
+            if (options.ScanPE && ScanTypePolicy.IsPe(type))
             {
                 foreach (var hit in PeSpecializedMatcher.Match(slice, state, options.Limits, cancellationToken))
                     results.Add(hit.Offset is null
@@ -153,7 +151,8 @@ public sealed partial class ScannerEngine
         ReadOnlySpan<byte> data,
         ScanLimits limits,
         string fileType,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        ScanOptions? scanOptions = null)
     {
         var results = new List<Detection>();
         if (data.IsEmpty) return results;
@@ -164,10 +163,10 @@ public sealed partial class ScannerEngine
             if (signature.MacroGroup is not null)
                 continue; // Macro members are consumed by LDB macro subsignatures, not alerts.
 
-            var normalized = NormalizeTargetData(data, fileType, signature.Target);
+            var normalized = NormalizeTargetData(data, fileType, signature.Target, scanOptions);
             ReadOnlySpan<byte> scanData = data;
             if (normalized is not null) scanData = normalized;
-            var context = LdbRuntime.CreateContext(scanData, fileType);
+            var context = LdbRuntime.CreateContext(scanData, fileType, scanOptions: scanOptions);
             if (!LdbRuntime.TargetMatchesFileType(signature.Target, context))
                 continue;
 
@@ -205,7 +204,7 @@ public sealed partial class ScannerEngine
         ScanOptions? scanOptions = null)
     {
         var results = new List<Detection>();
-        var baseContext = LdbRuntime.CreateContext(data, fileType, parentTypes, retyped);
+        var baseContext = LdbRuntime.CreateContext(data, fileType, parentTypes, retyped, scanOptions);
         // ClamAV gates PCRE signature support behind PCRE_CONF_SUPPORT and the
         // PE icon check behind PE_CONF_MATCHICON; a missing engine state keeps
         // both enabled (matching the all-on dconf defaults).
@@ -267,10 +266,10 @@ public sealed partial class ScannerEngine
                 var positions = new List<int>();
                 foreach (var member in pair.Value)
                 {
-                    var normalized = NormalizeTargetData(data, fileType, member.Target);
+                    var normalized = NormalizeTargetData(data, fileType, member.Target, scanOptions);
                     ReadOnlySpan<byte> memberData = data;
                     if (normalized is not null) memberData = normalized;
-                    var memberContext = normalized is null ? baseContext : LdbRuntime.CreateContext(memberData, fileType, parentTypes, retyped);
+                    var memberContext = normalized is null ? baseContext : LdbRuntime.CreateContext(memberData, fileType, parentTypes, retyped, scanOptions);
                     if (!LdbRuntime.TargetMatchesFileType(member.Target, memberContext))
                         continue;
                     // In an NDB macro member the $N$ offset is a group marker, not a file offset.
@@ -289,10 +288,10 @@ public sealed partial class ScannerEngine
             cancellationToken.ThrowIfCancellationRequested();
 
             var target = signature.Target;
-            var normalized = NormalizeTargetData(data, fileType, target?.Target ?? 0);
+            var normalized = NormalizeTargetData(data, fileType, target?.Target ?? 0, scanOptions);
             ReadOnlySpan<byte> matchData = data;
             if (normalized is not null) matchData = normalized;
-            var context = normalized is null ? baseContext : LdbRuntime.CreateContext(matchData, fileType, parentTypes, retyped);
+            var context = normalized is null ? baseContext : LdbRuntime.CreateContext(matchData, fileType, parentTypes, retyped, scanOptions);
             if (!LdbRuntime.MatchesTarget(target, context))
                 continue;
 
@@ -414,10 +413,12 @@ public sealed partial class ScannerEngine
                 }
             }
 
-            if (signature.FuzzyImageSubSignatures is not null)
+            if (signature.FuzzyImageSubSignatures is not null &&
+                (scanOptions is null || (scanOptions.ScanImage && scanOptions.ScanImageFuzzyHash)))
             {
                 foreach (var pair in signature.FuzzyImageSubSignatures)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     if (pair.Key < matches.Length && LdbRuntime.FuzzyImageMatches(matchData, pair.Value.Hash))
                         matches[pair.Key].Positions.Add(0);
                 }

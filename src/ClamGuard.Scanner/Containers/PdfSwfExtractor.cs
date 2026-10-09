@@ -22,7 +22,12 @@ internal static class PdfSwfExtractor
 
         var advertised = BinaryPrimitives.ReadUInt32LittleEndian(data.Slice(4, 4));
         var wanted = advertised >= 8 ? advertised - 8u : 0u;
-        if (wanted == 0 || wanted > options.Limits.MaxFileSize || wanted > int.MaxValue || data.Length <= 8) return results;
+        if (wanted == 0 || data.Length <= 8) return results;
+        if (wanted > options.Limits.MaxFileSize || wanted > int.MaxValue)
+        {
+            budget.LimitExceeded = true;
+            return results;
+        }
 
         try
         {
@@ -57,6 +62,8 @@ internal static class PdfSwfExtractor
     {
         var results = new List<Detection>();
         var ascii = Encoding.ASCII.GetString(data);
+        if (options.EnableHeuristics && options.HeuristicEncryptedDoc && ascii.Contains("/Encrypt", StringComparison.Ordinal))
+            results.Add(new Detection("Heuristics.Encrypted.PDF", SignatureType.Metadata, null, "heuristics", "PDF declares an encryption dictionary; encrypted content may be unscannable."));
         var search = 0;
         while (search < ascii.Length && budget.Entries < options.Limits.MaxArchiveEntries)
         {
@@ -86,9 +93,12 @@ internal static class PdfSwfExtractor
 
             var length = TryReadPdfLength(dictionary);
             var available = endMarker - lineEnd;
-            if (available <= 0 || available > options.Limits.MaxEmbeddedStreamSize) { search = endMarker + 9; continue; }
+            if (available <= 0) { search = endMarker + 9; continue; }
+            if (available > options.Limits.MaxEmbeddedStreamSize) budget.LimitExceeded = true;
+            if (available > options.Limits.MaxEmbeddedStreamSize) { search = endMarker + 9; continue; }
             var take = length is >= 0 and <= int.MaxValue ? Math.Min(length.Value, available) : available;
-            if (take <= 0 || take > options.Limits.MaxEmbeddedStreamSize) { search = endMarker + 9; continue; }
+            if (take <= 0) { search = endMarker + 9; continue; }
+            if (take > options.Limits.MaxEmbeddedStreamSize) { budget.LimitExceeded = true; search = endMarker + 9; continue; }
 
             var compressed = data.Slice(lineEnd, (int)take).ToArray();
             var earlyChange = TryReadPdfEarlyChange(dictionary);
@@ -102,6 +112,9 @@ internal static class PdfSwfExtractor
             results.AddRange(ArchiveScanner.ScanChild(child, "embedded-stream", "PDF", state, options, parents, depth, budget, cancellationToken));
             search = endMarker + 9;
         }
+        if (budget.Entries >= options.Limits.MaxArchiveEntries && search < ascii.Length &&
+            ascii.IndexOf("stream", search, StringComparison.Ordinal) >= 0)
+            budget.LimitExceeded = true;
         return results;
     }
 

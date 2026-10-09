@@ -244,14 +244,49 @@ public sealed class ScanHost : IDisposable, IAsyncDisposable
     private static ScanOptions CloneOptions(ScanOptions? source)
     {
         source ??= new ScanOptions();
+        // Normalize/validate the private copy so a malformed public byte limit cannot
+        // mutate caller-owned configuration or fail every file in a folder scan.
         var copy = new ScanOptions
         {
             CollectAllMatches = source.CollectAllMatches,
             Limits = source.Limits,
             YaraRuleDirectory = source.YaraRuleDirectory,
-            BytecodeDirectory = source.BytecodeDirectory
+            BytecodeDirectory = source.BytecodeDirectory,
+            ScanArchive = source.ScanArchive,
+            ScanELF = source.ScanELF,
+            ScanPDF = source.ScanPDF,
+            ScanSWF = source.ScanSWF,
+            ScanHWP3 = source.ScanHWP3,
+            ScanXMLDocs = source.ScanXMLDocs,
+            ScanMail = source.ScanMail,
+            ScanOLE2 = source.ScanOLE2,
+            ScanHTML = source.ScanHTML,
+            ScanPE = source.ScanPE,
+            ScanOneNote = source.ScanOneNote,
+            ScanImage = source.ScanImage,
+            ScanImageFuzzyHash = source.ScanImageFuzzyHash,
+            EnableHeuristics = source.EnableHeuristics,
+            HeuristicPrecedence = source.HeuristicPrecedence,
+            HeuristicExceedsMax = source.HeuristicExceedsMax,
+            HeuristicEncryptedArchive = source.HeuristicEncryptedArchive,
+            HeuristicEncryptedDoc = source.HeuristicEncryptedDoc,
+            MaxFileSize = source.MaxFileSize,
+            MaxScanSize = source.MaxScanSize,
+            MaxFiles = source.MaxFiles,
+            MaxRecursion = source.MaxRecursion,
+            DetectPUA = source.DetectPUA,
+            UseMultithreading = source.UseMultithreading,
+            MaxThreads = source.MaxThreads,
+            Verbose = source.Verbose,
+            ShowProgress = source.ShowProgress,
+            InfectedOnly = source.InfectedOnly,
+            Recursive = source.Recursive,
+            FollowSymlinks = source.FollowSymlinks,
+            ExcludeDirectories = [.. source.ExcludeDirectories],
+            ExcludeExtensions = [.. source.ExcludeExtensions]
         };
         foreach (var scanner in source.ContentScanners) copy.ContentScanners.Add(scanner);
+        copy.Validate();
         return copy;
     }
 

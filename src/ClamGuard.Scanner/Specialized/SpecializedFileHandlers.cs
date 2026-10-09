@@ -29,18 +29,19 @@ internal static partial class SpecializedFileHandlers
     {
         if (data.IsEmpty) return [];
 
-        // ClamAV scan_layer dispatches document handlers only when the DOCUMENT
-        // dconf flag is enabled for the engine flevel.
+        // ClamAV scan_layer dispatches each specialized handler only when its
+        // corresponding module-specific dconf capability is enabled.
         var dconf = state.Database.DynamicConfiguration;
         return fileType.ToUpperInvariant() switch
         {
-            "HWP3" when (dconf.Doc & DynamicConfigFlags.DocumentHwp) != 0 => ScanHwp3(data, state, options, path, cancellationToken),
-            "HWPOLE2" when (dconf.Doc & DynamicConfigFlags.DocumentHwp) != 0 => ScanHwpoLe2(data, state, options, path, cancellationToken),
+            "HWP3" when options.ScanHWP3 && (dconf.Doc & DynamicConfigFlags.DocumentHwp) != 0 => ScanHwp3(data, state, options, path, cancellationToken),
+            "HWPOLE2" when options.ScanOLE2 && (dconf.Archive & DynamicConfigFlags.ArchiveOle2) != 0 => ScanHwpoLe2(data, state, options, path, cancellationToken),
             "HTML" when (dconf.Doc & DynamicConfigFlags.DocumentHtml) != 0 => ScanHtmlVariants(data, state, options, path, cancellationToken),
             "HTML_UTF16" when (dconf.Doc & DynamicConfigFlags.DocumentHtml) != 0 => ScanHtmlUtf16Variants(data, state, options, path, cancellationToken),
-            "ONENOTE" when (dconf.Doc & DynamicConfigFlags.DocumentOneNote) != 0 => ScanOneNoteAttachments(data, state, options, path, cancellationToken),
-            "XDP" => ScanXdp(data, state, options, path, cancellationToken),
-            "XML_HWP" when (dconf.Doc & DynamicConfigFlags.DocumentHwp) != 0 => ScanHwpMl(data, state, options, path, cancellationToken),
+            "ONENOTE" when options.ScanOneNote && (dconf.Archive & DynamicConfigFlags.DocumentOneNote) != 0 => ScanOneNoteAttachments(data, state, options, path, cancellationToken),
+            "XDP" when options.ScanPDF && (dconf.Doc & DynamicConfigFlags.DocumentPdf) != 0 => ScanXdp(data, state, options, path, cancellationToken),
+            "XML_WORD" or "XML_XL" when options.ScanXMLDocs && (dconf.Doc & DynamicConfigFlags.DocumentMsXml) != 0 => ScanMsXml(data, state, options, path, cancellationToken),
+            "XML_HWP" when options.ScanXMLDocs && (dconf.Doc & DynamicConfigFlags.DocumentHwp) != 0 => ScanHwpMl(data, state, options, path, cancellationToken),
             _ => []
         };
     }

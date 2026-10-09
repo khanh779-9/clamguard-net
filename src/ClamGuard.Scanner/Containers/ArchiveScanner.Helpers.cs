@@ -46,33 +46,37 @@ internal static partial class ArchiveScanner
         var ndb = state.Database.Signatures.OfType<NdbSignature>().ToArray();
         var childParents = parents.Concat([parentType]).ToArray();
 
-        if (ScanTypePolicy.RequiresSpecializedPreRaw(type))
+        if (ScanTypePolicy.ShouldRunSpecializedPreRaw(type, options))
         {
             results.AddRange(SpecializedFileHandlers.ScanPreRaw(child, type, state, options, childPath, cancellationToken));
-            if (!options.CollectAllMatches && results.Count != 0)
-                return [results[0]];
+            if (!options.CollectAllMatches && options.HasBlockingDetections(results))
+                return options.FilterDetections(results).Take(1).ToList();
         }
 
         // Match ClamAV's layer ordering: container/document parsing happens before
         // the ordinary raw scan. Executables remain raw-first in the specialized
         // path below. The child is already materialized, so parser-first avoids an
         // otherwise duplicate read and preserves FTM-selected handler types.
-        if (ScanTypePolicy.IsArchiveContainer(type) &&
+        if (ScanTypePolicy.IsArchiveContainer(type) && ScanTypePolicy.ShouldParseContainer(type, options) &&
             depth + 1 < options.Limits.MaxArchiveDepth &&
             budget.Entries < options.Limits.MaxArchiveEntries)
         {
             results.AddRange(ScanInternal(child, childPath, state, options, childParents, depth + 1, budget, cancellationToken, type));
-            if (!options.CollectAllMatches && results.Count != 0)
-                return [results[0]];
+            if (!options.CollectAllMatches && options.HasBlockingDetections(results))
+                return options.FilterDetections(results).Take(1).ToList();
         }
 
-        results.AddRange(state.Compiled.Match(child, "compiled-database", includeNdb: false, collectAllMatches: options.CollectAllMatches));
-        if (!options.CollectAllMatches && results.Count != 0)
-            return [results[0]];
+        if (ScanTypePolicy.IsArchiveContainer(type) && ScanTypePolicy.ShouldParseContainer(type, options) &&
+            (depth + 1 >= options.Limits.MaxArchiveDepth || budget.Entries >= options.Limits.MaxArchiveEntries))
+            budget.LimitExceeded = true;
 
-        results.AddRange(ScannerEngine.EvaluateNdb(ndb, child, options.Limits, type, cancellationToken));
-        if (!options.CollectAllMatches && results.Count != 0)
-            return [results[0]];
+        results.AddRange(state.Compiled.Match(child, "compiled-database", includeNdb: false, collectAllMatches: (options.CollectAllMatches || !options.DetectPUA)));
+        if (!options.CollectAllMatches && options.HasBlockingDetections(results))
+            return options.FilterDetections(results).Take(1).ToList();
+
+        results.AddRange(ScannerEngine.EvaluateNdb(ndb, child, options.Limits, type, cancellationToken, options));
+        if (!options.CollectAllMatches && options.HasBlockingDetections(results))
+            return options.FilterDetections(results).Take(1).ToList();
 
         results.AddRange(ScannerEngine.EvaluateLogical(
             state.Database.Signatures.OfType<LogicalSignature>(),
@@ -85,20 +89,20 @@ internal static partial class ArchiveScanner
             cancellationToken,
             scanState: state,
             scanOptions: options));
-        if (!options.CollectAllMatches && results.Count != 0)
-            return [results[0]];
+        if (!options.CollectAllMatches && options.HasBlockingDetections(results))
+            return options.FilterDetections(results).Take(1).ToList();
 
-        if (ScanTypePolicy.IsPe(type))
+        if (options.ScanPE && ScanTypePolicy.IsPe(type))
         {
             results.AddRange(PeSpecializedMatcher.Match(child, state, options.Limits, cancellationToken));
-            if (!options.CollectAllMatches && results.Count != 0)
-                return [results[0]];
+            if (!options.CollectAllMatches && options.HasBlockingDetections(results))
+                return options.FilterDetections(results).Take(1).ToList();
         }
         foreach (var contentScanner in options.ContentScanners)
         {
             results.AddRange(contentScanner.Scan(child, childPath, cancellationToken));
-            if (!options.CollectAllMatches && results.Count != 0)
-                return [results[0]];
+            if (!options.CollectAllMatches && options.HasBlockingDetections(results))
+                return options.FilterDetections(results).Take(1).ToList();
         }
 
         return results;
@@ -184,7 +188,14 @@ internal static partial class ArchiveScanner
     {
         child = [];
         if (maxBytes < 0 || maxBytes > limits.MaxFileSize) return false;
-        using var output = new MemoryStream((int)Math.Min(maxBytes, 4 * 1024 * 1024));
+        var remainingBudget = limits.MaxArchiveExpandedBytes - budget.ExpandedBytes;
+        if (remainingBudget <= 0)
+        {
+            budget.LimitExceeded = true;
+            return false;
+        }
+        var effectiveMax = Math.Min(maxBytes, remainingBudget);
+        using var output = new MemoryStream((int)Math.Min(effectiveMax, 4 * 1024 * 1024));
         var buffer = new byte[64 * 1024];
         long count = 0;
         while (true)
@@ -193,7 +204,11 @@ internal static partial class ArchiveScanner
             var read = input.Read(buffer, 0, buffer.Length);
             if (read == 0) break;
             count += read;
-            if (count > maxBytes || count > limits.MaxFileSize) return false;
+            if (count > effectiveMax || count > limits.MaxFileSize)
+            {
+                if (count > remainingBudget) budget.LimitExceeded = true;
+                return false;
+            }
             output.Write(buffer, 0, read);
         }
         if (!ConsumeBudget(budget, limits, count)) return false;
@@ -203,7 +218,11 @@ internal static partial class ArchiveScanner
 
     internal static bool ConsumeBudget(ArchiveScanBudget budget, ScanLimits limits, long bytes)
     {
-        if (bytes < 0 || budget.ExpandedBytes > limits.MaxArchiveExpandedBytes - bytes) return false;
+        if (bytes < 0 || budget.ExpandedBytes > limits.MaxArchiveExpandedBytes - bytes)
+        {
+            budget.LimitExceeded = true;
+            return false;
+        }
         budget.ExpandedBytes += bytes;
         return true;
     }

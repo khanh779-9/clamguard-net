@@ -23,11 +23,21 @@ internal static partial class ArchiveScanner
         CancellationToken cancellationToken,
         string? forcedType = null)
     {
-        var budget = new ArchiveScanBudget();
+        var budget = new ArchiveScanBudget { ExpandedBytes = data.Length };
+        if (!ScanTypePolicy.ShouldParseContainer(forcedType ?? ScannerEngine.DetectType(data, hintPath, state.Database.SpecialDatabases.FileTypes), options))
+            return [];
+        if (data.Length > options.Limits.MaxArchiveExpandedBytes)
+        {
+            return options.EnableHeuristics && options.HeuristicExceedsMax
+                ? [new Detection("Heuristics.Limits.Exceeded", SignatureType.Metadata, null, "heuristics", "Container exceeds the configured total scan-size limit.")]
+                : [];
+        }
         try
         {
-            var results = ScanInternal(data, hintPath, state, options, parents ?? [], depth, budget, cancellationToken, forcedType);
-            return !options.CollectAllMatches && results.Count > 1 ? [results[0]] : results;
+            var results = ScanInternal(data, hintPath, state, options, parents ?? [], depth, budget, cancellationToken, forcedType).ToList();
+            if (budget.LimitExceeded && options.EnableHeuristics && options.HeuristicExceedsMax && !results.Any(x => x.Name.Equals("Heuristics.Limits.Exceeded", StringComparison.OrdinalIgnoreCase)))
+                results.Add(new Detection("Heuristics.Limits.Exceeded", SignatureType.Metadata, null, "heuristics", "One or more embedded objects could not be scanned because a configured scan limit was reached."));
+            return options.FilterDetections(results);
         }
         catch (OperationCanceledException)
         {
@@ -74,15 +84,30 @@ internal static partial class ArchiveScanner
         CancellationToken cancellationToken,
         string? forcedType = null)
     {
-        if (depth >= Math.Max(1, options.Limits.MaxArchiveDepth)) return [];
+        if (depth >= Math.Max(1, options.Limits.MaxArchiveDepth))
+        {
+            budget.LimitExceeded = true;
+            return [];
+        }
+        if (budget.ExpandedBytes > options.Limits.MaxArchiveExpandedBytes)
+        {
+            budget.LimitExceeded = true;
+            return [];
+        }
 
         // Once the scan layer has a ClamAV file type (including an FTM override),
         // that type is authoritative for selecting the parser. Re-detecting from
         // bytes here could discard a dynamic FTM re-type and skip its handler.
-        var type = NormalizeHandlerType(forcedType ?? DetectContainerType(data, hintPath));
+        var detectedType = (forcedType ?? DetectContainerType(data, hintPath))?.ToUpperInvariant();
+        // Native CL_TYPE_OOXML_* dispatch uses XMLDOCS for the optional OOXML
+        // metadata processor, but ARCHIVE for actual ZIP member extraction. The
+        // managed result model has no metadata-collection contract, so this path
+        // deliberately scans the members under ScanArchive and does not pretend
+        // that ScanXMLDocs disables native ZIP extraction.
+        var dconf = state.Database.DynamicConfiguration;
+        var type = NormalizeHandlerType(detectedType);
         // ClamAV scan_layer dispatches each format parser only when the module's
         // dconf flag is enabled for the engine flevel (e.g. ARCH_CONF_ZIP, DOC_CONF_PDF).
-        var dconf = state.Database.DynamicConfiguration;
         return type switch
         {
             "ZIP" when (dconf.Archive & DynamicConfigFlags.ArchiveZip) != 0 => ScanZip(data, state, options, parents, depth, budget, cancellationToken),

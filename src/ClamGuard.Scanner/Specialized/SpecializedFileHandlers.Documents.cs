@@ -19,6 +19,77 @@ namespace ClamGuard.Scanner;
 /// </summary>
 internal static partial class SpecializedFileHandlers
 {
+    /// <summary>
+    /// Managed subset of libclamav/msxml.c: inspect MS Office 2003 XML
+    /// BinaryData/binData elements encoded as Base64 and scan the decoded bytes
+    /// as a nested layer. Metadata extraction is intentionally not emulated.
+    /// </summary>
+    private static IReadOnlyList<Detection> ScanMsXml(
+        ReadOnlySpan<byte> data,
+        CompiledState state,
+        ScanOptions options,
+        string path,
+        CancellationToken cancellationToken)
+    {
+        if (data.IsEmpty || data.Length > options.Limits.MaxEmbeddedStreamSize)
+            return [];
+
+        var results = new List<Detection>();
+        try
+        {
+            using var stream = new MemoryStream(data.ToArray(), writable: false);
+            using var reader = XmlReader.Create(stream, new XmlReaderSettings
+            {
+                DtdProcessing = DtdProcessing.Prohibit,
+                XmlResolver = null,
+                IgnoreComments = false,
+                IgnoreWhitespace = false,
+                MaxCharactersInDocument = options.Limits.MaxEmbeddedStreamSize
+            });
+
+            while (reader.Read())
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (reader.NodeType != XmlNodeType.Element ||
+                    !reader.LocalName.Equals("bindata", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                var encoded = reader.ReadElementContentAsString();
+                if (string.IsNullOrWhiteSpace(encoded))
+                    continue;
+
+                byte[] decoded;
+                try
+                {
+                    decoded = Convert.FromBase64String(encoded);
+                }
+                catch (FormatException)
+                {
+                    continue;
+                }
+
+                if (decoded.Length == 0 || decoded.LongLength > options.Limits.MaxEmbeddedStreamSize)
+                    continue;
+
+                results.AddRange(ScanNestedBytes(decoded, state, options,
+                    $"{path}#msxml-bindata", cancellationToken));
+                if (!options.CollectAllMatches && options.HasBlockingDetections(results))
+                    return options.FilterDetections(results).Take(1).ToArray();
+            }
+        }
+        catch (XmlException)
+        {
+            // Keep raw matching intact when an XML document is malformed.
+        }
+        catch (InvalidOperationException)
+        {
+            // A binData element with nested markup is not a plain Base64 payload.
+            // Treat it as a parser miss instead of failing the outer file scan.
+        }
+
+        return results;
+    }
+
     private static IReadOnlyList<Detection> ScanHwpMl(
         ReadOnlySpan<byte> data,
         CompiledState state,
@@ -80,8 +151,8 @@ internal static partial class SpecializedFileHandlers
 
                 results.AddRange(ScanNestedBytes(content, state, options,
                     $"{path}#{local.ToLowerInvariant()}", cancellationToken));
-                if (!options.CollectAllMatches && results.Count != 0)
-                    return [results[0]];
+                if (!options.CollectAllMatches && options.HasBlockingDetections(results))
+                    return options.FilterDetections(results).Take(1).ToArray();
             }
         }
         catch (XmlException)

@@ -2,14 +2,26 @@ using System.Buffers.Binary;
 using System.IO.Compression;
 using System.Reflection;
 using System.Text;
+using ClamGuard.Core;
 using ClamGuard.Signatures;
 
 namespace ClamGuard.Scanner;
 
 internal static class LdbRuntime
 {
-    public static LdbScanContext CreateContext(ReadOnlySpan<byte> data, string fileType, IReadOnlyList<string>? parentTypes = null, bool retyped = false)
-        => new(fileType, data.Length, ExecutableInspector.TryInspect(data, fileType), parentTypes ?? [], retyped);
+    public static LdbScanContext CreateContext(
+        ReadOnlySpan<byte> data,
+        string fileType,
+        IReadOnlyList<string>? parentTypes = null,
+        bool retyped = false,
+        ScanOptions? scanOptions = null)
+    {
+        var parserDisabled = scanOptions is not null &&
+            ((ScanTypePolicy.IsPe(fileType) && !scanOptions.ScanPE) ||
+             (ScanTypePolicy.IsElf(fileType) && !scanOptions.ScanELF));
+        var executable = parserDisabled ? null : ExecutableInspector.TryInspect(data, fileType);
+        return new LdbScanContext(fileType, data.Length, executable, parentTypes ?? [], retyped);
+    }
 
     public static bool MatchesTarget(LdbTargetDescription? target, LdbScanContext ctx)
     {

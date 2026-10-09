@@ -26,6 +26,7 @@ internal static partial class SpecializedFileHandlers
         string path,
         CancellationToken cancellationToken)
     {
+        if (!options.ScanHTML) return [];
         var text = DecodeUtf16(data);
         if (text is null)
             return [];
@@ -39,7 +40,7 @@ internal static partial class SpecializedFileHandlers
         string path,
         CancellationToken cancellationToken)
     {
-        if (data.Length > options.Limits.MaxHtmlNormalize)
+        if (!options.ScanHTML || data.Length > options.Limits.MaxHtmlNormalize)
             return [];
 
         var text = Encoding.Latin1.GetString(data);
@@ -92,8 +93,8 @@ internal static partial class SpecializedFileHandlers
         if (data.IsEmpty) return [];
         var ndb = state.Database.Signatures.OfType<NdbSignature>().ToArray();
         var results = new List<Detection>();
-        results.AddRange(state.Compiled.Match(data, path, includeNdb: false, collectAllMatches: options.CollectAllMatches));
-        results.AddRange(ScannerEngine.EvaluateNdb(ndb, data, options.Limits, fileType, cancellationToken));
+        results.AddRange(state.Compiled.Match(data, path, includeNdb: false, collectAllMatches: (options.CollectAllMatches || !options.DetectPUA)));
+        results.AddRange(ScannerEngine.EvaluateNdb(ndb, data, options.Limits, fileType, cancellationToken, options));
         results.AddRange(ScannerEngine.EvaluateLogical(
             state.Database.Signatures.OfType<LogicalSignature>(),
             ndb,
