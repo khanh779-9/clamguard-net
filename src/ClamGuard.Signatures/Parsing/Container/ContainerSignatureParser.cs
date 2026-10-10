@@ -147,21 +147,37 @@ internal static class ContainerSignatureParser
 
             // ClamAV cli_loadmd expects exactly:
             // VirusName:Encrypted:FileNameREGEX:OriginalSize:CompressedSize:Res1:CompressionMethod:FilePos:MaxDepth
+            // The filename regex may itself contain ':' (e.g. POSIX classes such
+            // as [[:digit:]]), so the surplus tokens are re-joined into the regex
+            // field: the six trailing fields are always the numeric block.
             var parts = line.Split(':');
-            if (parts.Length != 9)
+            if (parts.Length < 9)
                 throw new FormatException($"Invalid {containerType} metadata signature in {path}: {line}");
+            string[] fields;
+            if (parts.Length == 9)
+            {
+                fields = parts;
+            }
+            else
+            {
+                fields = new string[9];
+                fields[0] = parts[0];
+                fields[1] = parts[1];
+                fields[2] = string.Join(":", parts.Skip(2).Take(parts.Length - 8));
+                Array.Copy(parts, parts.Length - 6, fields, 3, 6);
+            }
 
             // cli_loadmd accepts any numeric value. cli_matchmeta treats only 2 as
             // the wildcard value; other numeric values are retained and therefore
             // only match the same numeric metadata value.
-            var encryptedValue = ParseMetadataWildcardInt(parts[1], "encrypted", path, line);
+            var encryptedValue = ParseMetadataWildcardInt(fields[1], "encrypted", path, line);
 
             PosixEreRegex? fileNameRegex = null;
-            if (parts[2] != "*")
+            if (fields[2] != "*")
             {
                 try
                 {
-                    fileNameRegex = new PosixEreRegex(parts[2]);
+                    fileNameRegex = new PosixEreRegex(fields[2]);
                 }
                 catch (ArgumentException ex)
                 {
@@ -169,15 +185,15 @@ internal static class ContainerSignatureParser
                 }
             }
 
-            var originalSize = ParseMetadataRange(parts[3], "original size", path, line);
-            var compressedSize = ParseMetadataRange(parts[4], "compressed size", path, line);
-            var res1 = ParseMetadataHexWildcard(parts[5], path, line);
-            var compressionMethod = ParseMetadataWildcardInt(parts[6], "compression method", path, line);
-            var filePosition = ParseMetadataRange(parts[7], "file number", path, line);
-            var maxDepth = ParseMetadataWildcardInt(parts[8], "max depth", path, line);
+            var originalSize = ParseMetadataRange(fields[3], "original size", path, line);
+            var compressedSize = ParseMetadataRange(fields[4], "compressed size", path, line);
+            var res1 = ParseMetadataHexWildcard(fields[5], path, line);
+            var compressionMethod = ParseMetadataWildcardInt(fields[6], "compression method", path, line);
+            var filePosition = ParseMetadataRange(fields[7], "file number", path, line);
+            var maxDepth = ParseMetadataWildcardInt(fields[8], "max depth", path, line);
 
             yield return new MetadataSignature(
-                parts[0],
+                fields[0],
                 path,
                 containerType,
                 encryptedValue ?? 2,

@@ -106,7 +106,6 @@ internal static partial class Program
         var data = new byte[32774];
         data[32768] = 1;
         "CD001"u8.CopyTo(data.AsSpan(32769));
-        data[32774 - 1] = 1;
         return data;
     }
 
@@ -143,6 +142,9 @@ internal static partial class Program
         var data = CreateTarEntry(name, content);
         var header = data.AsSpan(0, 512);
         header.Slice(257, 8).Clear();
+        // Tar checksums are computed with the checksum field treated as spaces;
+        // reset it first so the previous POSIX checksum text is not summed in.
+        header.Slice(148, 8).Fill((byte)' ');
         var checksum = 0;
         foreach (var b in header) checksum += b;
         Encoding.ASCII.GetBytes(Convert.ToString(checksum, 8).PadLeft(6, '0') + " \0").AsSpan().CopyTo(header.Slice(148, 8));
@@ -319,7 +321,7 @@ internal static partial class Program
 
     private static byte[] BuildAutoItMarker()
     {
-        var magic = Convert.FromHexString("a3484bbe986c4aa9994c530a86d6487d41553321454130");
+        var magic = Convert.FromHexString("a3484bbe986c4aa9994c530a86d6487d41555321454130");
         return magic.Concat(new byte[] { 0x35 }).Concat("AUTOIT"u8.ToArray()).ToArray();
     }
 
@@ -400,14 +402,14 @@ internal static partial class Program
         BinaryPrimitives.WriteUInt16LittleEndian(header.Slice(32, 2), 6);
         BinaryPrimitives.WriteUInt32LittleEndian(header.Slice(40, 4), 0);
         BinaryPrimitives.WriteUInt32LittleEndian(header.Slice(44, 4), 1);
-        BinaryPrimitives.WriteUInt32LittleEndian(header.Slice(48, 4), 1);
+        BinaryPrimitives.WriteUInt32LittleEndian(header.Slice(48, 4), 0);
         BinaryPrimitives.WriteUInt32LittleEndian(header.Slice(56, 4), 4096);
         BinaryPrimitives.WriteUInt32LittleEndian(header.Slice(60, 4), 0xFFFFFFFE);
         BinaryPrimitives.WriteUInt32LittleEndian(header.Slice(64, 4), 0);
         BinaryPrimitives.WriteUInt32LittleEndian(header.Slice(68, 4), 0xFFFFFFFE);
         BinaryPrimitives.WriteUInt32LittleEndian(header.Slice(72, 4), 0);
         for (var i = 0; i < 109; i++) BinaryPrimitives.WriteUInt32LittleEndian(header.Slice(76 + i * 4, 4), 0xFFFFFFFF);
-        BinaryPrimitives.WriteUInt32LittleEndian(header.Slice(76, 4), 0);
+        BinaryPrimitives.WriteUInt32LittleEndian(header.Slice(76, 4), 2 + streamSectors);
 
         var dir = data.AsSpan(512, 512);
         WriteOleDirEntry(dir.Slice(0, 128), "Root Entry", 5, 0xFFFFFFFF, 0);
@@ -415,10 +417,10 @@ internal static partial class Program
 
         var fat = data.AsSpan(512 + (2 + streamSectors) * sectorSize, sectorSize);
         for (var i = 0; i < 128; i++) BinaryPrimitives.WriteUInt32LittleEndian(fat.Slice(i * 4, 4), 0xFFFFFFFF);
-        BinaryPrimitives.WriteUInt32LittleEndian(fat.Slice(0, 4), 0xFFFFFFFD); // FAT sector 0
-        BinaryPrimitives.WriteUInt32LittleEndian(fat.Slice(1 * 4, 4), 0xFFFFFFFE); // directory sector 1
+        BinaryPrimitives.WriteUInt32LittleEndian(fat.Slice(0, 4), 0xFFFFFFFE); // directory sector 0 ends the chain
         for (var i = 0; i < streamSectors; i++)
             BinaryPrimitives.WriteUInt32LittleEndian(fat.Slice((2 + i) * 4, 4), i + 2 == 2 + streamSectors - 1 ? 0xFFFFFFFEu : (uint)(3 + i));
+        BinaryPrimitives.WriteUInt32LittleEndian(fat.Slice((2 + streamSectors) * 4, 4), 0xFFFFFFFD); // FAT sector marks itself
 
         var stream = data.AsSpan(512 + 2 * sectorSize, streamSectors * sectorSize);
         content.AsSpan(0, Math.Min(content.Length, stream.Length)).CopyTo(stream);

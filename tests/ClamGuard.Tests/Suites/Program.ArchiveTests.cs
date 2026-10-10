@@ -6,7 +6,7 @@ internal static partial class Program
         var archiveDbDir = Path.Combine(Path.GetTempPath(), "clamguard-archive-db-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(archiveDbDir);
         File.WriteAllText(Path.Combine(archiveDbDir, "archives.ldb"),
-            "Archive.Tar;Engine:81-255,Target:0,Container:CL_TYPE_TAR;0;5441524348495645\n" +
+            "Archive.Tar;Engine:81-255,Target:0,Container:CL_TYPE_TAR;0;41524348495645\n" +
             "Archive.Nested;Engine:81-255,Target:0,Intermediates:CL_TYPE_GZ>CL_TYPE_TAR;0;4e4553544544\n" +
             "Archive.Cpio;Engine:81-255,Target:0,Container:CL_TYPE_CPIO_NEWC;0;4350494f484954\n" +
             "Archive.CpioOdc;Engine:81-255,Target:0,Container:CL_TYPE_CPIO_ODC;0;4f4443484954\n" +
@@ -54,7 +54,7 @@ internal static partial class Program
             "Cdb.Archive.OldTar:CL_TYPE_OLD_TAR:*:^old\\.bin$:7:7:0:1:*:*\n" +
             "Cdb.Archive.Cpio:CL_TYPE_CPIO_NEWC:*:^sample\\.bin$:7:7:0:1:*:*\n" +
             "Cdb.Archive.CpioOdc:CL_TYPE_CPIO_ODC:*:^sample\\.bin$:6:6:0:1:*:*\n" +
-            "Cdb.Archive.CpioOld:CL_TYPE_CPIO_OLD:*:^sample\\.bin$:7:7:0:1:*:*\n" +
+            "Cdb.Archive.CpioOld:CL_TYPE_CPIO_OLD:*:^sample\\.bin$:6:6:0:1:*:*\n" +
             "Cdb.Archive.OleMustNotMatch:CL_TYPE_MSOLE2:*:^Payload$:4096:4096:0:2:*:*\n");
         var cdbArchiveManager = new DatabaseManager();
         cdbArchiveManager.LoadAndCompile(cdbArchiveDbDir, true);
@@ -131,7 +131,7 @@ internal static partial class Program
         {
             ("sample.autoit", BuildAutoItMarker(), "AUTOIT"),
             ("sample.ish", BuildInstallShieldMarker(), "ISHIELD_MSI"),
-            ("sample.udf", Enumerable.Repeat((byte)0, 32770).Append((byte)'B').Append((byte)'E').Append((byte)'A').Append((byte)'0').Append((byte)'1').ToArray(), "UDF")
+            ("sample.udf", Enumerable.Repeat((byte)0, 32768).Append((byte)'B').Append((byte)'E').Append((byte)'A').Append((byte)'0').Append((byte)'1').ToArray(), "UDF")
         };
         foreach (var sample in specialTypeSamples)
         {

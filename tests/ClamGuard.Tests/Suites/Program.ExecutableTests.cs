@@ -65,7 +65,9 @@ internal static partial class Program
         var machoDbDir = Path.Combine(Path.GetTempPath(), "clamguard-macho-db-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(machoDbDir);
         var machoDbPath = Path.Combine(machoDbDir, "macho.ldb");
-        File.WriteAllText(machoDbPath, "MachO.Slice;Engine:81-255,Target:9;0;feedfacf\n");
+        // The fixture writes the thin x86_64 slice magic little-endian (CF FA ED FE);
+        // the pattern must be the on-disk byte order to match the slice.
+        File.WriteAllText(machoDbPath, "MachO.Slice;Engine:81-255,Target:9;0;cffaedfe\n");
         var machoManager = new DatabaseManager();
         machoManager.LoadAndCompile(machoDbDir, true);
         var machoScanner = new ClamGuard.Scanner.ScannerEngine(machoManager);

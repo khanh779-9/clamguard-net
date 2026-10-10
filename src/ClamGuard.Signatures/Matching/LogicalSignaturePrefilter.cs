@@ -12,12 +12,15 @@ namespace ClamGuard.Signatures.Matching;
 /// </summary>
 internal sealed class LogicalSignaturePrefilter
 {
-    private const int SeedLength = sizeof(ulong);
+    // A 4-byte seed keeps the candidate dictionary compact (one entry per
+    // anchor variant) while still rejecting the overwhelming majority of
+    // non-matching files with a single dictionary probe per 4-byte window.
+    private const int SeedLength = sizeof(uint);
     private const ulong FnvOffsetBasis = 14695981039346656037UL;
     private const ulong FnvPrime = 1099511628211UL;
 
     private readonly IReadOnlyList<LogicalSignature> _signatures;
-    private readonly Dictionary<ulong, SeedBucket> _signaturesBySeed = [];
+    private readonly Dictionary<uint, SeedBucket> _signaturesBySeed = [];
     private readonly List<SeedEntry> _seedEntries = [];
     private readonly HashSet<LogicalSignature> _indexed = new(ReferenceEqualityComparer.Instance);
     private int _builtSignatureCount = -1;
@@ -72,7 +75,7 @@ internal sealed class LogicalSignaturePrefilter
 
         for (var offset = 0; offset <= data.Length - SeedLength; offset++)
         {
-            var seed = BinaryPrimitives.ReadUInt64LittleEndian(data.Slice(offset, SeedLength));
+            var seed = BinaryPrimitives.ReadUInt32LittleEndian(data.Slice(offset, SeedLength));
             if (!_signaturesBySeed.TryGetValue(seed, out var bucket))
                 continue;
 
@@ -126,7 +129,7 @@ internal sealed class LogicalSignaturePrefilter
         if (anchor is null)
             return false;
 
-        var candidateVariants = GetVariants(anchor).Select(static pattern => pattern.ToFixedBytes()).ToArray();
+        var candidateVariants = GetVariants(anchor).ToArray();
         if (candidateVariants.Length == 0 || candidateVariants.Any(static bytes => bytes.Length < SeedLength))
             return false;
 
@@ -134,20 +137,20 @@ internal sealed class LogicalSignaturePrefilter
         return true;
     }
 
-    private static (ulong Seed, int Offset) SelectSeed(
+    private static (uint Seed, int Offset) SelectSeed(
         ReadOnlySpan<byte> pattern,
-        IReadOnlyDictionary<ulong, SeedBucket> frequency)
+        IReadOnlyDictionary<uint, SeedBucket> frequency)
     {
         var lastOffset = pattern.Length - SeedLength;
         var offset = GetInitialSeedOffset(pattern, lastOffset + 1);
-        ulong bestSeed = 0;
+        uint bestSeed = 0;
         var bestOffset = 0;
         var bestFrequency = int.MaxValue;
 
         for (var checkedOffsets = 0; checkedOffsets <= lastOffset; checkedOffsets++)
         {
             var currentOffset = (offset + checkedOffsets) % (lastOffset + 1);
-            var seed = BinaryPrimitives.ReadUInt64LittleEndian(pattern.Slice(currentOffset, SeedLength));
+            var seed = BinaryPrimitives.ReadUInt32LittleEndian(pattern.Slice(currentOffset, SeedLength));
             var currentFrequency = frequency.TryGetValue(seed, out var bucket) ? bucket.Count : 0;
 
             if (currentFrequency == 0)
@@ -194,7 +197,10 @@ internal sealed class LogicalSignaturePrefilter
             parsed.Add(index);
         }
 
-        if (parsed.Count < 2)
+        // A single required subsignature is still a pure conjunction: the rule
+        // can only match when that subsignature matches, so a single-term
+        // expression is indexable just like a multi-term AND.
+        if (parsed.Count < 1)
             return false;
 
         indices = parsed.ToArray();
@@ -214,27 +220,45 @@ internal sealed class LogicalSignaturePrefilter
     }
 
     private static bool IsIndexable(ContentSignature signature)
-        => signature.Pattern.IsFixed &&
-           !signature.MatchOptions.HasFlag(ContentMatchOptions.IgnoreCase);
+    {
+        if (signature.MatchOptions.HasFlag(ContentMatchOptions.IgnoreCase))
+            return false;
+        if (signature.Pattern.IsFixed)
+            return true;
+
+        // Flexible (wildcard) patterns can still be anchored: any match must
+        // contain the pattern's longest fixed-byte run, so an anchor miss
+        // soundly rejects the signature.
+        return signature.Pattern.TryGetSearchAnchor(out _, out var anchor) && anchor.Length >= SeedLength;
+    }
 
     private static int GetLongestVariantLength(ContentSignature signature)
     {
-        var length = signature.Pattern.MinLength;
+        if (!signature.Pattern.TryGetSearchAnchor(out _, out var anchor))
+            return 0;
+        var length = anchor.Length;
         return signature.MatchOptions.HasFlag(ContentMatchOptions.Wide)
             ? checked(length * 2)
             : length;
     }
 
-    private static IEnumerable<HexPattern> GetVariants(ContentSignature signature)
+    private static IEnumerable<byte[]> GetVariants(ContentSignature signature)
     {
         if (!signature.MatchOptions.HasFlag(ContentMatchOptions.Wide) ||
             signature.MatchOptions.HasFlag(ContentMatchOptions.Ascii))
         {
-            yield return signature.Pattern;
+            yield return GetAnchorBytes(signature.Pattern);
         }
 
         if (signature.MatchOptions.HasFlag(ContentMatchOptions.Wide))
-            yield return signature.Pattern.ToWideVariant();
+            yield return GetAnchorBytes(signature.Pattern.ToWideVariant());
+    }
+
+    private static byte[] GetAnchorBytes(HexPattern pattern)
+    {
+        if (pattern.TryGetSearchAnchor(out _, out var anchor) && anchor.Length != 0)
+            return anchor;
+        throw new InvalidOperationException("Signature has no usable search anchor.");
     }
 
     private readonly record struct SeedBucket(int Head, int Count);

@@ -72,8 +72,7 @@
                     <Button Grid.Column="1"
                             Command="{Binding UpdateCommand}"
                             Style="{DynamicResource Style.ButtonPrimary}"
-                            VerticalAlignment="Center"
-                            IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBoolConverter}}">
+                            VerticalAlignment="Center">
                         <TextBlock Text="{loc:Loc tools.update_now}" />
                     </Button>
                 </Grid>

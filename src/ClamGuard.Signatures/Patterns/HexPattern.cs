@@ -15,6 +15,7 @@ public sealed class HexPattern
 
     private readonly byte[]? _fixedBytes;
     private PatternAtom[]? _atoms;
+    private HexPattern? _wideVariant;
     private readonly int _minLength;
     private readonly int _maxLength;
 
@@ -66,50 +67,142 @@ public sealed class HexPattern
         return (byte[])_fixedBytes.Clone();
     }
 
+    /// <summary>
+    /// Returns fixed bytes for exact patterns, or the longest fixed-byte run
+    /// (together with its byte offset inside the pattern) for flexible patterns.
+    /// A candidate match of the whole pattern can only start at
+    /// (anchor position - offsetInPattern), so callers can prefilter with
+    /// a span search instead of attempting the general matcher at every byte.
+    /// </summary>
+    public bool TryGetSearchAnchor(out int offsetInPattern, out byte[] anchor)
+    {
+        if (_fixedBytes is not null)
+        {
+            offsetInPattern = 0;
+            anchor = (byte[])_fixedBytes.Clone();
+            return true;
+        }
+
+        return TryGetLongestExactRun(out offsetInPattern, out anchor);
+    }
+
+    private bool TryGetLongestExactRun(out int offsetInPattern, out byte[] anchor)
+    {
+        offsetInPattern = 0;
+        anchor = [];
+
+        // The run is only usable as a positional anchor when every preceding
+        // atom has a deterministic length; otherwise the candidate start offset
+        // is not derivable from the anchor position alone.
+        var prefixFixedLength = true;
+        var byteOffset = 0;
+        var bestLength = 0;
+        var bestAtomStart = 0;
+        var bestByteStart = 0;
+        var runLength = 0;
+        var runAtomStart = 0;
+        var runByteStart = 0;
+        var atoms = GetAtoms();
+        for (var i = 0; i < atoms.Length; i++)
+        {
+            if (atoms[i] is ExactByteAtom)
+            {
+                if (runLength == 0)
+                {
+                    runAtomStart = i;
+                    runByteStart = byteOffset;
+                }
+                runLength++;
+                byteOffset++;
+                continue;
+            }
+
+            if (runLength > bestLength && prefixFixedLength)
+            {
+                bestLength = runLength;
+                bestAtomStart = runAtomStart;
+                bestByteStart = runByteStart;
+            }
+
+            runLength = 0;
+            if (atoms[i].MinLength != atoms[i].MaxLength)
+                prefixFixedLength = false;
+            byteOffset += atoms[i].MinLength;
+        }
+
+        if (runLength > bestLength && prefixFixedLength)
+        {
+            bestLength = runLength;
+            bestAtomStart = runAtomStart;
+            bestByteStart = runByteStart;
+        }
+
+        if (bestLength < 2)
+            return false;
+
+        var run = new byte[bestLength];
+        for (var i = 0; i < bestLength; i++)
+            run[i] = ((ExactByteAtom)atoms[bestAtomStart + i]).Value;
+        offsetInPattern = bestByteStart;
+        anchor = run;
+        return true;
+    }
+
     public HexPattern ToWideVariant()
     {
+        // Wide variants are requested for every subsignature on every scanned
+        // file; cache the expansion so repeated scans do not reallocate it.
+        if (_wideVariant is not null)
+            return _wideVariant;
+
+        HexPattern created;
         if (_fixedBytes is not null)
         {
             var wideBytes = new byte[checked(_fixedBytes.Length * 2)];
             for (var index = 0; index < _fixedBytes.Length; index++)
                 wideBytes[index * 2] = _fixedBytes[index];
-            return new HexPattern(wideBytes.Select(ExactByteAtom.From));
+            created = new HexPattern(wideBytes.Select(ExactByteAtom.From));
         }
-
-        var expanded = new List<PatternAtom>();
-        foreach (var atom in Atoms)
+        else
         {
-            switch (atom)
+            var expanded = new List<PatternAtom>();
+            foreach (var atom in Atoms)
             {
-                case ExactByteAtom exact:
-                    expanded.Add(exact);
-                    expanded.Add(ExactByteAtom.From(0));
-                    break;
-                case MaskedByteAtom masked:
-                    expanded.Add(masked);
-                    expanded.Add(ExactByteAtom.From(0));
-                    break;
-                case AlternatePatternAtom alternate when !alternate.Negated:
-                    expanded.Add(new AlternatePatternAtom(alternate.Alternatives.Select(static x => x.ToWideVariant()).ToArray()));
-                    break;
-                case AlternatePatternAtom:
-                    throw new InvalidOperationException("Negated alternates cannot be widened.");
-                case GapAtom gap when gap.MinBytes != int.MaxValue && gap.MaxBytes != int.MaxValue:
-                    expanded.Add(new GapAtom(checked(gap.MinBytes * 2), checked(gap.MaxBytes * 2)));
-                    break;
-                case GapAtom gap when gap.MinBytes == int.MaxValue:
-                    expanded.Add(gap);
-                    break;
-                case GapAtom gap:
-                    expanded.Add(new GapAtom(checked(gap.MinBytes * 2), int.MaxValue));
-                    break;
-                default:
-                    expanded.Add(atom);
-                    break;
+                switch (atom)
+                {
+                    case ExactByteAtom exact:
+                        expanded.Add(exact);
+                        expanded.Add(ExactByteAtom.From(0));
+                        break;
+                    case MaskedByteAtom masked:
+                        expanded.Add(masked);
+                        expanded.Add(ExactByteAtom.From(0));
+                        break;
+                    case AlternatePatternAtom alternate when !alternate.Negated:
+                        expanded.Add(new AlternatePatternAtom(alternate.Alternatives.Select(static x => x.ToWideVariant()).ToArray()));
+                        break;
+                    case AlternatePatternAtom:
+                        throw new InvalidOperationException("Negated alternates cannot be widened.");
+                    case GapAtom gap when gap.MinBytes != int.MaxValue && gap.MaxBytes != int.MaxValue:
+                        expanded.Add(new GapAtom(checked(gap.MinBytes * 2), checked(gap.MaxBytes * 2)));
+                        break;
+                    case GapAtom gap when gap.MinBytes == int.MaxValue:
+                        expanded.Add(gap);
+                        break;
+                    case GapAtom gap:
+                        expanded.Add(new GapAtom(checked(gap.MinBytes * 2), int.MaxValue));
+                        break;
+                    default:
+                        expanded.Add(atom);
+                        break;
+                }
             }
+
+            created = new HexPattern(expanded);
         }
 
-        return new HexPattern(expanded);
+        _wideVariant = created;
+        return created;
     }
 
     public bool Matches(ReadOnlySpan<byte> data, int start, out int consumed, PatternMatchOptions options = default)

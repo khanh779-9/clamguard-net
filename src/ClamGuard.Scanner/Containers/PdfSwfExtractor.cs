@@ -75,8 +75,12 @@ internal static class PdfSwfExtractor
             var lineEnd = streamPos + 6;
             if (lineEnd < ascii.Length && ascii[lineEnd] == '\r') lineEnd++;
             if (lineEnd < ascii.Length && ascii[lineEnd] == '\n') lineEnd++;
-            var dictStart = ascii.LastIndexOf("<<", streamPos, StringComparison.Ordinal);
-            var dictEnd = dictStart >= 0 ? ascii.IndexOf(">>", dictStart + 2, StringComparison.Ordinal) : -1;
+            // The stream dictionary can nest additional dictionaries (e.g.
+            // /DecodeParms << /EarlyChange 1 >>). A plain LastIndexOf("<<")
+            // would grab the inner opener and lose /Filter, so walk backwards
+            // balancing << >> pairs to find the outermost dictionary opener.
+            var dictStart = FindOuterDictionaryStart(ascii, streamPos);
+            var dictEnd = dictStart >= 0 ? FindDictionaryEnd(ascii, dictStart) : -1;
             if (dictStart < 0 || dictEnd < 0 || dictEnd > streamPos)
             {
                 search = endMarker + 9;
@@ -116,6 +120,40 @@ internal static class PdfSwfExtractor
             ascii.IndexOf("stream", search, StringComparison.Ordinal) >= 0)
             budget.LimitExceeded = true;
         return results;
+    }
+
+    private static int FindOuterDictionaryStart(string ascii, int streamPos)
+    {
+        // depth counts closers (>>) seen so far that still need an opener.
+        // The stream's dictionary opener is the one that brings the count to zero.
+        var depth = 0;
+        for (var i = streamPos - 1; i > 0; i--)
+        {
+            if (ascii[i] == '>' && ascii[i - 1] == '>') { depth++; i--; continue; }
+            if (ascii[i] == '<' && ascii[i - 1] == '<')
+            {
+                depth--;
+                if (depth == 0) return i - 1;
+                i--;
+            }
+        }
+        return -1;
+    }
+
+    private static int FindDictionaryEnd(string ascii, int dictStart)
+    {
+        var depth = 0;
+        for (var i = dictStart; i + 1 < ascii.Length; i++)
+        {
+            if (ascii[i] == '<' && ascii[i + 1] == '<') { depth++; i++; continue; }
+            if (ascii[i] == '>' && ascii[i + 1] == '>')
+            {
+                depth--;
+                if (depth == 0) return i + 2;
+                i++;
+            }
+        }
+        return -1;
     }
 
     private static IReadOnlyList<string> ParsePdfFilters(string dictionary)

@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using ClamGuard.Core;
 using ClamGuard.Signatures;
+using ClamGuard.Signatures.Patterns;
 
 namespace ClamGuard.Signatures.Matching;
 
@@ -46,6 +47,14 @@ public sealed partial class CompiledSignatureSet
     private AhoCorasickMatcher _contentAc = new();
     private BoyerMooreHorspoolMatcher? _singleFixedMatcher;
     private ContentSignature? _singleFixedEntry;
+
+    // Flexible (wildcard) signatures: one shared automaton over each pattern's
+    // longest fixed-byte run surfaces all candidate positions in a single scan,
+    // instead of running every pattern across the whole file.
+    private readonly List<FlexibleEntry> _flexibleAcEntries = [];
+    private readonly List<ContentSignature> _unanchoredFlexibleContent = [];
+    private readonly List<NdbSignature> _unanchoredFlexibleNdb = [];
+    private AhoCorasickMatcher? _flexibleAc;
     private bool _built;
 
     public CompiledSignatureSet()
@@ -186,6 +195,53 @@ public sealed partial class CompiledSignatureSet
         }
         _logicalPrefilter.Build();
 
+        // Flexible (wildcard) signatures: index each pattern's longest fixed-byte
+        // run in a dedicated automaton. Any whole-pattern match must contain the
+        // run, so candidate positions come from one AC scan over the data.
+        _flexibleAcEntries.Clear();
+        _unanchoredFlexibleContent.Clear();
+        _unanchoredFlexibleNdb.Clear();
+        foreach (var content in _flexibleContent)
+        {
+            if (content.MatchOptions.HasFlag(ContentMatchOptions.IgnoreCase) ||
+                !content.Pattern.TryGetSearchAnchor(out var anchorOffset, out var anchor) ||
+                anchor.Length < 4)
+            {
+                _unanchoredFlexibleContent.Add(content);
+                continue;
+            }
+
+            _flexibleAcEntries.Add(new FlexibleEntry(
+                content.Name, content.Type, content.SourceFile, content.Pattern,
+                content.OffsetExpression, anchorOffset, anchor, null));
+        }
+
+        foreach (var ndb in _flexibleNdb)
+        {
+            if (!ndb.Pattern.TryGetSearchAnchor(out var anchorOffset, out var anchor) || anchor.Length < 4)
+            {
+                _unanchoredFlexibleNdb.Add(ndb);
+                continue;
+            }
+
+            _flexibleAcEntries.Add(new FlexibleEntry(
+                ndb.Name, SignatureType.Ndb, ndb.SourceFile, ndb.Pattern,
+                ndb.OffsetExpression, anchorOffset, anchor, ndb));
+        }
+
+        if (_flexibleAcEntries.Count != 0)
+        {
+            var flexible = new AhoCorasickMatcher();
+            for (var id = 0; id < _flexibleAcEntries.Count; id++)
+                flexible.Add(_flexibleAcEntries[id].Anchor, id);
+            flexible.Build();
+            _flexibleAc = flexible;
+        }
+        else
+        {
+            _flexibleAc = null;
+        }
+
         // Match a single long exact signature with the BM backend rather than
         // paying the AC state-machine cost. With multiple signatures, AC remains
         // the multi-pattern engine and keeps its cross-pattern sharing.
@@ -253,7 +309,62 @@ public sealed partial class CompiledSignatureSet
         if (!collectAllMatches && hits.Count != 0)
             return hits.Values.Take(1).ToArray();
 
-        foreach (var content in _flexibleContent)
+        if (_flexibleAc is not null && _flexibleAcEntries.Count != 0)
+        {
+            // The span cannot be captured by the scan callback, so candidate
+            // positions are buffered first and verified afterwards. Patterns are
+            // verified in insertion order and stop at their first matching
+            // candidate, matching the previous position-ascending evaluation.
+            var flexibleState = 0;
+            var dataLength = data.Length;
+            var candidatesById = new Dictionary<int, List<int>>();
+            _flexibleAc.ScanUntil(data, ref flexibleState, 0, (id, endOffset) =>
+            {
+                var entry = _flexibleAcEntries[id];
+                if (entry.Ndb is not null && ndbFilter is not null && !ndbFilter(entry.Ndb))
+                    return false;
+
+                // endOffset is the position of the anchor's final byte.
+                var candidate = (int)(endOffset - entry.Anchor.Length + 1) - entry.AnchorOffset;
+                if (candidate < 0 || candidate > dataLength - entry.Pattern.MinLength)
+                    return false;
+                if (!candidatesById.TryGetValue(id, out var positions))
+                    candidatesById[id] = positions = [];
+                positions.Add(candidate);
+                return false;
+            });
+
+            for (var id = 0; id < _flexibleAcEntries.Count; id++)
+            {
+                if (!candidatesById.TryGetValue(id, out var positions))
+                    continue;
+                var entry = _flexibleAcEntries[id];
+                var attempts = 0;
+                foreach (var candidate in positions)
+                {
+                    // Bound the verification work for anchors that occur very
+                    // frequently in the scanned data (e.g. zero runs).
+                    if (++attempts > MaxAnchorVerificationsPerPattern)
+                        break;
+                    if (!OffsetAllows(entry.OffsetExpression, candidate, data.Length))
+                        continue;
+                    if (!entry.Pattern.Matches(data, candidate, out _))
+                        continue;
+
+                    hits.TryAdd(entry.Name,
+                        new Detection(entry.Name, entry.Type, candidate, entry.SourceFile, "Flexible content pattern matched."));
+                    break;
+                }
+
+                if (!collectAllMatches && hits.Count != 0)
+                    return hits.Values.Take(1).ToArray();
+            }
+
+            if (!collectAllMatches && hits.Count != 0)
+                return hits.Values.Take(1).ToArray();
+        }
+
+        foreach (var content in _unanchoredFlexibleContent)
         {
             MatchFlexible(content, data, hits, 0);
             if (!collectAllMatches && hits.Count != 0)
@@ -262,7 +373,7 @@ public sealed partial class CompiledSignatureSet
 
         if (includeNdb)
         {
-            foreach (var ndb in _flexibleNdb)
+            foreach (var ndb in _unanchoredFlexibleNdb)
             {
                 if (ndbFilter is not null && !ndbFilter(ndb))
                     continue;
@@ -534,4 +645,14 @@ public sealed partial class CompiledSignatureSet
                         _falsePositiveBuckets.ContainsKey((algorithm, null)));
         return hasDetection || hasTrust;
     }
+
+    private sealed record FlexibleEntry(
+        string Name,
+        SignatureType Type,
+        string SourceFile,
+        HexPattern Pattern,
+        string OffsetExpression,
+        int AnchorOffset,
+        byte[] Anchor,
+        NdbSignature? Ndb);
 }

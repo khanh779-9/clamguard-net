@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.IO;
 using System.Text;
+using System.Threading;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -22,7 +23,7 @@ public partial class MainWindow : ClamGuardWindow
     private readonly RealtimeProtectionService _realtime;
     private readonly MainViewModel _viewModel;
     private readonly CancellationTokenSource _lifetimeCts = new();
-    private CancellationTokenSource? _scanCts;
+    private int _updateRunning;
     private string _currentPage = "Overview";
 
     private OverviewView? _overviewView;
@@ -155,7 +156,7 @@ public partial class MainWindow : ClamGuardWindow
     {
         try
         {
-            _scanCts?.Cancel();
+            _viewModel.CancelActiveScans();
         }
         catch { }
     }
@@ -173,12 +174,10 @@ public partial class MainWindow : ClamGuardWindow
 
         Navigate("Scan");
         _viewModel.IsShowingScanResults = false;
-        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCts.Token);
-        _scanCts = linkedCts;
 
         try
         {
-            var result = await _viewModel.ScanFileAsync(dialog.FileName, linkedCts.Token);
+            var result = await _viewModel.ScanFileAsync(dialog.FileName, _lifetimeCts.Token);
             _viewModel.PopulateScanResults([result]);
             PresentScanResult(result, manual: true);
         }
@@ -190,10 +189,6 @@ public partial class MainWindow : ClamGuardWindow
         catch (Exception ex)
         {
             ShowToast(App.Localization.Get("toast.scan_failed"), ex.Message, ToastKind.Error);
-        }
-        finally
-        {
-            _scanCts = null;
         }
     }
 
@@ -210,12 +205,10 @@ public partial class MainWindow : ClamGuardWindow
 
         Navigate("Scan");
         _viewModel.IsShowingScanResults = false;
-        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCts.Token);
-        _scanCts = linkedCts;
 
         try
         {
-            var results = await _viewModel.ScanFolderAsync(dialog.FolderName, linkedCts.Token);
+            var results = await _viewModel.ScanFolderAsync(dialog.FolderName, _lifetimeCts.Token);
             _viewModel.PopulateScanResults(results);
             var threats = results.Count(x => x.Verdict is ScanVerdict.Malicious or ScanVerdict.PotentiallyUnwanted or ScanVerdict.StrongIndicator);
             ShowToast(
@@ -231,15 +224,11 @@ public partial class MainWindow : ClamGuardWindow
         {
             ShowToast(App.Localization.Get("toast.scan_stopped"), ex.Message, ToastKind.Warning);
         }
-        finally
-        {
-            _scanCts = null;
-        }
     }
 
     private async void Update()
     {
-        if (_viewModel.IsBusy) return;
+        if (Interlocked.Exchange(ref _updateRunning, 1) != 0) return;
         ShowToast(App.Localization.Get("toast.updating"), App.Localization.Get("toast.update_body"), ToastKind.Info);
         try
         {
@@ -256,6 +245,10 @@ public partial class MainWindow : ClamGuardWindow
         catch (Exception ex)
         {
             ShowToast(App.Localization.Get("toast.update_failed"), ex.Message, ToastKind.Error);
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _updateRunning, 0);
         }
     }
 

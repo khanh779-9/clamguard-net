@@ -187,7 +187,9 @@ public sealed class PosixEreRegex
             }
 
             sb.Append(replacement);
-            i = close;
+            // ":]" occupies two characters; skip both so the class's own
+            // closing bracket is not re-emitted after the replacement.
+            i = close + 1;
         }
 
         return sb.ToString();

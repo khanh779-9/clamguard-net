@@ -50,7 +50,8 @@ internal static partial class Program
         BinaryPrimitives.WriteUInt16LittleEndian(block.AsSpan(3, 2), flags);
         BinaryPrimitives.WriteUInt16LittleEndian(block.AsSpan(5, 2), checked((ushort)size));
         body.CopyTo(block.AsSpan(7));
-        BinaryPrimitives.WriteUInt16LittleEndian(block.AsSpan(0, 2), checked((ushort)RarCrc32(block.AsSpan(2))));
+        // RAR4 HEAD_CRC is a 2-byte field holding the low 16 bits of the CRC32.
+        BinaryPrimitives.WriteUInt16LittleEndian(block.AsSpan(0, 2), (ushort)(RarCrc32(block.AsSpan(2)) & 0xFFFFu));
         return block;
     }
 
@@ -71,7 +72,7 @@ internal static partial class Program
         BinaryPrimitives.WriteUInt16LittleEndian(fileBody.AsSpan(19, 2), checked((ushort)nameBytes.Length));
         BinaryPrimitives.WriteUInt32LittleEndian(fileBody.AsSpan(21, 4), 0); // ATTR
         nameBytes.CopyTo(fileBody.AsSpan(25));
-        var file = BuildRar4Block(0x74, 0, fileBody);
+        var file = BuildRar4Block(0x74, 0x8000, fileBody);
         var end = BuildRar4Block(0x7B, 0, []);
 
         return [

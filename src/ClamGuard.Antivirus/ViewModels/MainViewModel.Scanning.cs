@@ -56,7 +56,7 @@ public sealed partial class MainViewModel
         var pendingItems = CurrentScanResults.Where(x => x.IsThreat && !x.IsProcessed).ToList();
         if (pendingItems.Count == 0) return;
 
-        IsBusy = true;
+        var task = _tracker.Start("ApplyActions", LocalizationService.Instance.Get("tasks.apply_actions"), string.Empty);
         try
         {
             foreach (var item in pendingItems)
@@ -92,7 +92,7 @@ public sealed partial class MainViewModel
         }
         finally
         {
-            IsBusy = false;
+            _tracker.Complete(task);
             OnPropertyChanged(nameof(ScanResultsSummaryText));
             CommandManager.InvalidateRequerySuggested();
         }
@@ -100,7 +100,7 @@ public sealed partial class MainViewModel
 
     public async Task InitializeAsync(CancellationToken token = default)
     {
-        IsBusy = true;
+        var task = _tracker.Start("Initialize", LocalizationService.Instance.Get("tasks.initializing"), string.Empty);
         StatusTitle = LocalizationService.Instance.Get("nav.engine");
         StatusDescription = LocalizationService.Instance.Get("overview.loading_db");
         try
@@ -118,47 +118,44 @@ public sealed partial class MainViewModel
         }
         finally
         {
-            IsBusy = false;
+            _tracker.Complete(task);
         }
     }
 
     public async Task<ScanResult> ScanFileAsync(string file, CancellationToken token = default)
     {
-        IsBusy = true;
-        IsScanning = true;
-        ScannedCount = 0;
-        TotalToScan = 1;
-        ThreatsDetectedCount = 0;
-        ScanPercent = 10;
-        CurrentScanningFile = file;
-        ScanProgressText = LocalizationService.Instance.Format("scan.file_scan_desc");
+        var task = _tracker.Start("ScanFile",
+            LocalizationService.Instance.Format("scan.file_scan") + ": " + Path.GetFileName(file),
+            file, isCancellable: true, token);
+        task.TotalToScan = 1;
+        task.Percent = 10;
+        task.CurrentFile = file;
+        task.ProgressText = LocalizationService.Instance.Format("scan.file_scan_desc");
         try
         {
-            var result = await Task.Run(() => _engine.ScanFileAsync(file, token), token).ConfigureAwait(true);
-            ScannedCount = 1;
-            ScanPercent = 100;
-            if (result.Verdict is ScanVerdict.Malicious or ScanVerdict.PotentiallyUnwanted or ScanVerdict.StrongIndicator) ThreatsDetectedCount++;
+            var result = await Task.Run(() => _engine.ScanFileAsync(file, task.Token), token).ConfigureAwait(true);
+            task.ScannedCount = 1;
+            task.Percent = 100;
+            if (result.Verdict is ScanVerdict.Malicious or ScanVerdict.PotentiallyUnwanted or ScanVerdict.StrongIndicator)
+                task.ThreatsFound++;
             AddHistory(result, "File Scan");
             RefreshHealth();
             return result;
         }
         finally
         {
-            IsScanning = false;
-            IsBusy = false;
-            ScanProgressText = LocalizationService.Instance.Get("scan.ready");
+            task.ProgressText = LocalizationService.Instance.Get("scan.ready");
+            SnapshotCompletedScan(task);
+            _tracker.Complete(task);
         }
     }
 
     public async Task<IReadOnlyList<ScanResult>> ScanFolderAsync(string folder, CancellationToken token = default)
     {
-        IsBusy = true;
-        IsScanning = true;
-        ScannedCount = 0;
-        TotalToScan = 0;
-        ThreatsDetectedCount = 0;
-        ScanPercent = 0;
-        CurrentScanningFile = folder;
+        var task = _tracker.Start("ScanFolder",
+            LocalizationService.Instance.Format("scan.folder_scan") + ": " + Path.GetFileName(folder),
+            folder, isCancellable: true, token);
+        task.CurrentFile = folder;
         var collected = new List<ScanResult>();
         var lastUiUpdateTicks = 0L;
 
@@ -169,7 +166,7 @@ public sealed partial class MainViewModel
                 collected.Add(r);
                 if (r.Verdict is ScanVerdict.Malicious or ScanVerdict.PotentiallyUnwanted or ScanVerdict.StrongIndicator)
                 {
-                    ThreatsDetectedCount++;
+                    task.ThreatsFound++;
                     AddHistory(r, "Folder Scan");
                 }
             }
@@ -180,16 +177,16 @@ public sealed partial class MainViewModel
             if (isFinal || nowTicks - lastUiUpdateTicks >= 60)
             {
                 lastUiUpdateTicks = nowTicks;
-                ScannedCount = p.Completed;
-                TotalToScan = p.Total;
-                CurrentScanningFile = p.Path;
-                ScanPercent = p.Total > 0 ? Math.Min(100.0, (double)p.Completed / p.Total * 100.0) : 0;
-                ScanProgressText = string.Format(CultureInfo.CurrentCulture, "{0:N0} / {1:N0} · {2}", p.Completed, p.Total, Path.GetFileName(p.Path));
+                task.ScannedCount = p.Completed;
+                task.TotalToScan = p.Total;
+                task.CurrentFile = p.Path;
+                task.Percent = p.Total > 0 ? Math.Min(100.0, (double)p.Completed / p.Total * 100.0) : 0;
+                task.ProgressText = string.Format(CultureInfo.CurrentCulture, "{0:N0} / {1:N0} · {2}", p.Completed, p.Total, Path.GetFileName(p.Path));
             }
         });
         try
         {
-            var results = await Task.Run(() => _engine.ScanFolderAsync(folder, progress, token), token).ConfigureAwait(true);
+            var results = await Task.Run(() => _engine.ScanFolderAsync(folder, progress, task.Token), token).ConfigureAwait(true);
             RefreshHealth();
             return results;
         }
@@ -201,15 +198,15 @@ public sealed partial class MainViewModel
         }
         finally
         {
-            IsScanning = false;
-            IsBusy = false;
-            ScanProgressText = LocalizationService.Instance.Get("scan.ready");
+            task.ProgressText = LocalizationService.Instance.Get("scan.ready");
+            SnapshotCompletedScan(task);
+            _tracker.Complete(task);
         }
     }
 
     public async Task<UpdateResult> UpdateDatabaseAsync(CancellationToken token = default)
     {
-        IsBusy = true;
+        var task = _tracker.Start("Update", LocalizationService.Instance.Get("update.database"), string.Empty, externalToken: token);
         StatusTitle = LocalizationService.Instance.Get("update.database");
         StatusDescription = LocalizationService.Instance.Get("update.keep_current");
         try
@@ -222,7 +219,7 @@ public sealed partial class MainViewModel
         }
         finally
         {
-            IsBusy = false;
+            _tracker.Complete(task);
         }
     }
 

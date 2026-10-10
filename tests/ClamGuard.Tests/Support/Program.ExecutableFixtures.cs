@@ -82,7 +82,7 @@ internal static partial class Program
         BinaryPrimitives.WriteUInt64LittleEndian(data.AsSpan(72), 0x100);
         BinaryPrimitives.WriteUInt64LittleEndian(data.AsSpan(80), sectionOffset);
         BinaryPrimitives.WriteUInt64LittleEndian(data.AsSpan(88), 4);
-        BinaryPrimitives.WriteUInt32LittleEndian(data.AsSpan(96), 7);
+        BinaryPrimitives.WriteUInt32LittleEndian(data.AsSpan(96), 1);
         BinaryPrimitives.WriteUInt32LittleEndian(data.AsSpan(100), 5);
         BinaryPrimitives.WriteUInt32LittleEndian(data.AsSpan(104), 1);
         var section = 32 + 72;

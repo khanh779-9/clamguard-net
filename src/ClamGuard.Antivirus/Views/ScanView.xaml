@@ -43,7 +43,7 @@
                                     <TextBlock Text="{loc:Loc scan.file_scan_desc}" Style="{DynamicResource Style.MutedText}" Margin="0,2,0,0" />
                                 </StackPanel>
                             </StackPanel>
-                            <Button Grid.Row="1" Margin="0,14,0,0" Command="{Binding QuickScanCommand}" Style="{DynamicResource Style.ButtonPrimary}" IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBoolConverter}}">
+                            <Button Grid.Row="1" Margin="0,14,0,0" Command="{Binding QuickScanCommand}" Style="{DynamicResource Style.ButtonPrimary}">
                                 <TextBlock Text="{loc:Loc scan.select_file}" />
                             </Button>
                         </Grid>
@@ -60,7 +60,7 @@
                                     <TextBlock Text="{loc:Loc scan.folder_scan_desc}" Style="{DynamicResource Style.MutedText}" Margin="0,2,0,0" />
                                 </StackPanel>
                             </StackPanel>
-                            <Button Grid.Row="1" Margin="0,14,0,0" Command="{Binding CustomScanCommand}" Style="{DynamicResource Style.ButtonSecondary}" IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBoolConverter}}">
+                            <Button Grid.Row="1" Margin="0,14,0,0" Command="{Binding CustomScanCommand}" Style="{DynamicResource Style.ButtonSecondary}">
                                 <TextBlock Text="{loc:Loc scan.select_folder}" />
                             </Button>
                         </Grid>

@@ -17,7 +17,13 @@ public sealed partial class MainViewModel : INotifyPropertyChanged
     private readonly AntivirusEngineService _engine;
     private readonly SystemInspectorService _systemInspector = new();
     private readonly QuarantineService _quarantine = new();
-    private bool _isBusy;
+    private readonly ActiveTaskTracker _tracker = new();
+    private int _lastCompletedScanned;
+    private int _lastCompletedTotal;
+    private int _lastCompletedThreats;
+    private double _lastCompletedPercent;
+    private string _lastCompletedFile = string.Empty;
+    private string _lastCompletedText = string.Empty;
     private bool _isSystemBusy;
     private string _statusTitle = string.Empty;
     private string _statusDescription = string.Empty;
@@ -52,14 +58,17 @@ public sealed partial class MainViewModel : INotifyPropertyChanged
         RefreshLocalizedUi();
         LocalizationService.Instance.LanguageChanged += (_, _) => RefreshLocalizedUi();
 
-        QuickScanCommand = new RelayCommand(() => QuickScanRequested?.Invoke(this, EventArgs.Empty), () => !IsBusy && DatabaseReady);
-        CustomScanCommand = new RelayCommand(() => CustomScanRequested?.Invoke(this, EventArgs.Empty), () => !IsBusy && DatabaseReady);
-        UpdateCommand = new RelayCommand(() => UpdateRequested?.Invoke(this, EventArgs.Empty), () => !IsBusy);
+        _tracker.Changed += (_, _) => OnTrackerChanged();
+        _tracker.ProgressChanged += (_, _) => OnTrackerChanged();
+
+        QuickScanCommand = new RelayCommand(() => QuickScanRequested?.Invoke(this, EventArgs.Empty), () => DatabaseReady);
+        CustomScanCommand = new RelayCommand(() => CustomScanRequested?.Invoke(this, EventArgs.Empty), () => DatabaseReady);
+        UpdateCommand = new RelayCommand(() => UpdateRequested?.Invoke(this, EventArgs.Empty));
         ConfigureSecurityCommand = new RelayCommand(() => ConfigureSecurityRequested?.Invoke(this, EventArgs.Empty));
         OpenToolsCommand = new RelayCommand(() => OpenToolsRequested?.Invoke(this, EventArgs.Empty));
         ChangeDataLocationCommand = new RelayCommand(() => ChangeDataLocationRequested?.Invoke(this, EventArgs.Empty), () => !IsBusy);
-        RealtimeFolderCommand = new RelayCommand(() => RealtimeFolderRequested?.Invoke(this, EventArgs.Empty), () => !IsBusy);
-        RealtimeToggleCommand = new RelayCommand(() => RealtimeToggleRequested?.Invoke(this, EventArgs.Empty), () => !IsBusy);
+        RealtimeFolderCommand = new RelayCommand(() => RealtimeFolderRequested?.Invoke(this, EventArgs.Empty));
+        RealtimeToggleCommand = new RelayCommand(() => RealtimeToggleRequested?.Invoke(this, EventArgs.Empty));
         DeleteHistoryCommand = new RelayCommand(() => DeleteHistoryRequested?.Invoke(this, EventArgs.Empty), () => HasReports);
         ClearHistoryCommand = new RelayCommand(() => ClearHistoryRequested?.Invoke(this, EventArgs.Empty), () => HasReports);
         ExportHistoryCommand = new RelayCommand(() => ExportHistoryRequested?.Invoke(this, EventArgs.Empty), () => HasReports);
@@ -74,8 +83,8 @@ public sealed partial class MainViewModel : INotifyPropertyChanged
         RestoreSelectedQuarantineCommand = new RelayCommand(() => { if (SelectedQuarantineItem is { } item) RestoreQuarantineRequested?.Invoke(this, item); }, () => SelectedQuarantineItem is not null);
         DeleteSelectedQuarantineCommand = new RelayCommand(() => { if (SelectedQuarantineItem is { } item) DeleteQuarantineRequested?.Invoke(this, item); }, () => SelectedQuarantineItem is not null);
         RefreshQuarantineCommand = new RelayCommand(RefreshQuarantine);
-        CancelScanCommand = new RelayCommand(() => CancelScanRequested?.Invoke(this, EventArgs.Empty), () => IsBusy);
-        ApplyScanActionsCommand = new AsyncRelayCommand(ApplyScanActionsAsync, () => !IsBusy && CurrentScanResults.Any(x => !x.IsProcessed));
+        CancelScanCommand = new RelayCommand(() => CancelScanRequested?.Invoke(this, EventArgs.Empty), () => IsScanning);
+        ApplyScanActionsCommand = new AsyncRelayCommand(ApplyScanActionsAsync, () => CurrentScanResults.Any(x => !x.IsProcessed));
         BackToScanCommand = new RelayCommand(() => IsShowingScanResults = false);
     }
 
@@ -133,10 +142,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged
     public ObservableCollection<DriveSnapshotItem> Drives { get; } = [];
     public ObservableCollection<QuarantineItem> QuarantineItems { get; } = [];
 
-    public bool IsBusy {
-        get => _isBusy;
-        private set { if (SetField(ref _isBusy, value)) { OnPropertyChanged(nameof(BusyStatusText)); } }
-    }
+    public bool IsBusy => _tracker.HasActiveTasks;
     public bool IsSystemBusy { get => _isSystemBusy; private set => SetField(ref _isSystemBusy, value); }
     public string StatusTitle { get => _statusTitle; private set => SetField(ref _statusTitle, value); }
     public string StatusDescription { get => _statusDescription; private set => SetField(ref _statusDescription, value); }
@@ -153,8 +159,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged
         set { if (SetField(ref _realtimeEnabled, value)) { OnPropertyChanged(nameof(RealtimeStatusText)); } }
     }
     public string RealtimePath { get => _realtimePath; set => SetField(ref _realtimePath, value); }
-    private bool _isScanning;
-    public bool IsScanning { get => _isScanning; private set => SetField(ref _isScanning, value); }
+    public bool IsScanning => _tracker.HasActiveScans;
     private int _scannedCount;
     public int ScannedCount { get => _scannedCount; private set => SetField(ref _scannedCount, value); }
     private int _totalToScan;
@@ -164,7 +169,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged
     private string _currentScanningFile = string.Empty;
     public string CurrentScanningFile { get => _currentScanningFile; private set => SetField(ref _currentScanningFile, value); }
     private double _scanPercent;
-    public double ScanPercent { get => _scanPercent; set => SetField(ref _scanPercent, value); }
+    public double ScanPercent { get => _scanPercent; private set => SetField(ref _scanPercent, value); }
     public string ScanProgressText { get => _scanProgressText; set => SetField(ref _scanProgressText, value); }
     public string LastUpdateText { get => _lastUpdateText; private set => SetField(ref _lastUpdateText, value); }
     public string HeaderTitle { get => _headerTitle; set => SetField(ref _headerTitle, value); }
@@ -275,6 +280,54 @@ public sealed partial class MainViewModel : INotifyPropertyChanged
     {
         get => _selectedScanResult;
         set => SetField(ref _selectedScanResult, value);
+    }
+
+    public void CancelActiveScans() => _tracker.CancelScans();
+
+    private void OnTrackerChanged()
+    {
+        UpdateScanAggregates();
+        OnPropertyChanged(nameof(IsBusy));
+        OnPropertyChanged(nameof(IsScanning));
+        OnPropertyChanged(nameof(BusyStatusText));
+        CommandManager.InvalidateRequerySuggested();
+    }
+
+    private void UpdateScanAggregates()
+    {
+        var scans = _tracker.ActiveTasks.Where(t => t.IsScan).ToList();
+        if (scans.Count > 0)
+        {
+            ScannedCount = scans.Sum(x => x.ScannedCount);
+            TotalToScan = scans.Sum(x => x.TotalToScan);
+            ThreatsDetectedCount = scans.Sum(x => x.ThreatsFound);
+            ScanPercent = TotalToScan > 0 ? Math.Min(100.0, (double)ScannedCount / TotalToScan * 100.0) : 0;
+            var latest = scans[^1];
+            CurrentScanningFile = latest.CurrentFile;
+            ScanProgressText = scans.Count > 1
+                ? string.Format(CultureInfo.CurrentCulture, "{0} · {1}", LocalizationService.Instance.Format("tasks.running_multi", scans.Count), Path.GetFileName(latest.CurrentFile))
+                : latest.ProgressText;
+        }
+        else
+        {
+            ScannedCount = _lastCompletedScanned;
+            TotalToScan = _lastCompletedTotal;
+            ThreatsDetectedCount = _lastCompletedThreats;
+            ScanPercent = _lastCompletedPercent;
+            CurrentScanningFile = _lastCompletedFile;
+            ScanProgressText = _lastCompletedText;
+        }
+    }
+
+    private void SnapshotCompletedScan(ActiveTaskItem task)
+    {
+        if (_tracker.ActiveTasks.Any(t => t.IsScan && !ReferenceEquals(t, task))) return;
+        _lastCompletedScanned = task.ScannedCount;
+        _lastCompletedTotal = task.TotalToScan;
+        _lastCompletedThreats = task.ThreatsFound;
+        _lastCompletedPercent = task.Percent;
+        _lastCompletedFile = task.CurrentFile;
+        _lastCompletedText = task.ProgressText;
     }
 
     public void RefreshHealth()
@@ -413,6 +466,9 @@ public sealed partial class MainViewModel : INotifyPropertyChanged
         HeaderTitle = string.IsNullOrWhiteSpace(HeaderTitle) ? LocalizationService.Instance.Get("header.overview") : HeaderTitle;
         if (HeaderSubtitle.Length == 0) HeaderSubtitle = LocalizationService.Instance.Get("header.overview_sub");
         ScanProgressText = string.IsNullOrEmpty(ScanProgressText) ? LocalizationService.Instance.Get("scan.ready") : ScanProgressText;
+        _lastCompletedText = string.Equals(_lastCompletedText, string.Empty, StringComparison.Ordinal)
+            ? LocalizationService.Instance.Get("scan.ready")
+            : _lastCompletedText;
         RealtimePath = string.IsNullOrEmpty(RealtimePath) ? LocalizationService.Instance.Get("security.choose_folder") : RealtimePath;
         LastUpdateText = string.IsNullOrEmpty(LastUpdateText) ? LocalizationService.Instance.Get("common.not_installed") : LastUpdateText;
         SetProtectionStatus();

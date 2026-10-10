@@ -65,6 +65,9 @@ public sealed partial class CompiledSignatureSet
         }
     }
 
+    private const int MinAnchorLength = 4;
+    private const int MaxAnchorVerificationsPerPattern = 64;
+
     private void MatchAho(
         AhoCorasickMatcher matcher,
         IReadOnlyList<ContentSignature> entries,
@@ -183,6 +186,44 @@ public sealed partial class CompiledSignatureSet
             return;
 
         var fileLength = knownLength ?? (baseOffset + data.Length);
+
+        // Anchor fast path: wildcard-heavy patterns previously forced a full
+        // backtracking attempt at every byte position, which dominates scan time
+        // on real ClamAV databases. Locating the longest exact-byte run with a
+        // span search reduces the matcher to a handful of candidate positions.
+        if (pattern.TryGetSearchAnchor(out var anchorOffset, out var anchor) && anchor.Length >= 4)
+        {
+            var searchStart = 0;
+            var attempts = 0;
+            while (searchStart + anchor.Length <= data.Length)
+            {
+                var relative = data.Slice(searchStart).IndexOf(anchor);
+                if (relative < 0)
+                    break;
+
+                var anchorPosition = searchStart + relative;
+                searchStart = anchorPosition + 1;
+                if (++attempts > MaxAnchorVerificationsPerPattern)
+                    break;
+
+                var candidate = anchorPosition - anchorOffset;
+                if (candidate < 0 || candidate > maxStart)
+                    continue;
+                var absoluteOffset = baseOffset + candidate;
+                if (!OffsetAllows(offsetExpression, absoluteOffset, fileLength) ||
+                    !pattern.Matches(data, candidate, out _))
+                {
+                    continue;
+                }
+
+                hits.TryAdd(name,
+                    new Detection(name, type, absoluteOffset, sourceFile, "Flexible content pattern matched."));
+                return;
+            }
+
+            return;
+        }
+
         for (var position = 0; position <= maxStart; position++)
         {
             var absoluteOffset = baseOffset + position;

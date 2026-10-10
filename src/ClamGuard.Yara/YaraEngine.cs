@@ -245,7 +245,11 @@ internal static class YaraParser
 
     private static IEnumerable<YaraStringDefinition> ParseStrings(string section, YaraScanOptions options)
     {
-        foreach (Match m in Regex.Matches(section, "(?m)^(?<id>\\$[A-Za-z_][A-Za-z0-9_]*)\\s*=\\s*(?<value>\"(?:\\\\.|[^\"])*\"|\\{.*?\\}|/.*?/)(?<mods>[^\\r\\n;]*)\\s*;?"))
+        // YARA string definitions are conventionally indented inside the strings
+        // section, so allow leading whitespace before the identifier. The trailing
+        // separator must not cross line endings, otherwise it swallows the next
+        // definition's line-start anchor.
+        foreach (Match m in Regex.Matches(section, "(?m)^\\s*(?<id>\\$[A-Za-z_][A-Za-z0-9_]*)\\s*=\\s*(?<value>\"(?:\\\\.|[^\"])*\"|\\{.*?\\}|/.*?/)(?<mods>[^\\r\\n;]*)[^\\S\\r\\n]*;?"))
         {
             var id = m.Groups["id"].Value;
             var value = m.Groups["value"].Value.Trim();

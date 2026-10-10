@@ -243,8 +243,17 @@ public sealed partial class ScannerEngine
         if (header.Length < 512) return false;
         var nameEnd = header[..100].IndexOf((byte)0);
         if (nameEnd == 0) return false;
+        // Tar stores octal checksums. The ArchiveScanner tar helper already
+        // parses octal; this root-level check must do the same, otherwise
+        // old-style TAR headers (no ustar magic) are never recognized here.
         var storedText = Encoding.ASCII.GetString(header.Slice(148, 8)).TrimEnd('\0').Trim();
-        if (!long.TryParse(storedText, System.Globalization.NumberStyles.Integer, null, out var stored)) return false;
+        if (storedText.Length == 0) return false;
+        var stored = 0L;
+        foreach (var c in storedText)
+        {
+            if (c is < '0' or > '7') return false;
+            stored = checked(stored * 8 + (c - '0'));
+        }
         var sum = 0L;
         for (var i = 0; i < 512; i++) sum += i is >= 148 and < 156 ? 32 : header[i];
         return stored > 0 && sum == stored;

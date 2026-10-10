@@ -60,6 +60,41 @@ internal static class LogicalContentMatcher
                     continue;
                 }
 
+                // Anchor fast path for wildcard patterns: any match contains the
+                // pattern's longest fixed-byte run, so a span search over the
+                // range restricts the general matcher to candidate positions
+                // instead of attempting it at every byte.
+                if (!options.IgnoreCase && !options.FullWord &&
+                    pattern.TryGetSearchAnchor(out var anchorOffset, out var anchor) && anchor.Length >= 4)
+                {
+                    var anchorSearchStart = start;
+                    var attempts = 0;
+                    while (anchorSearchStart + anchor.Length <= data.Length)
+                    {
+                        var relative = data.Slice(anchorSearchStart).IndexOf(anchor);
+                        if (relative < 0)
+                            break;
+                        var anchorPos = anchorSearchStart + relative;
+                        anchorSearchStart = anchorPos + 1;
+                        if (anchorPos > last)
+                            break;
+                        if (++attempts > 64)
+                            break;
+
+                        var candidate = anchorPos - anchorOffset;
+                        if (candidate < start || candidate > last)
+                            continue;
+                        if (!pattern.Matches(data, candidate, out var consumed, options))
+                            continue;
+                        if (consumed <= 0 || (long)candidate + consumed > maxBound)
+                            continue;
+                        results.Add(candidate);
+                        if (results.Count >= maxMatches)
+                            return results;
+                    }
+                    continue;
+                }
+
                 // General fallback path for wildcards / classes / alternates / word-boundaries
                 for (var pos = start; pos <= last && pos < data.Length; pos++)
                 {

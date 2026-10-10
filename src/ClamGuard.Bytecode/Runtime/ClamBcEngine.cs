@@ -18,8 +18,28 @@ public sealed class ClamBcEngine
     {
         options ??= new BytecodeScanOptions();
         ValidateOptions(options);
-        var program = ClamBcParser.Parse(text, source, options);
-        return new ClamBcEngine(program is null ? Array.Empty<ClamBcProgram>() : [program]);
+        try
+        {
+            var program = ClamBcParser.Parse(text, source, options);
+            return new ClamBcEngine(program is null ? Array.Empty<ClamBcProgram>() : [program]);
+        }
+        catch (FormatException)
+        {
+            // Skip malformed/incompatible bytecode safely, matching LoadDirectory.
+        }
+        catch (OverflowException)
+        {
+            // Skip integer-overflowing bytecode safely, matching LoadDirectory.
+        }
+        catch (IndexOutOfRangeException)
+        {
+            // Skip structurally truncated bytecode safely, matching LoadDirectory.
+        }
+        catch (ArgumentException)
+        {
+            // Skip malformed argument encodings safely, matching LoadDirectory.
+        }
+        return new ClamBcEngine([]);
     }
 
     public static ClamBcEngine LoadDirectory(string directory, BytecodeScanOptions? options = null)

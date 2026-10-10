@@ -357,3 +357,8 @@ close=Close
 restore=Restore
 maximize=Maximize
 minimize=Minimize
+
+[tasks]
+initializing=Initializing
+apply_actions=Applying threat actions
+running_multi={0} actions running

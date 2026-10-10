@@ -10,7 +10,28 @@ namespace ClamGuard.Signatures.Parsing;
 public static class SignatureParser
 {
     public static IEnumerable<Signature> ParseFile(string path, int engineFunctionalityLevel = 234)
-        => ParseLines(File.ReadLines(path), path, engineFunctionalityLevel);
+    {
+        // File.ReadLines opens the file eagerly. Deferred via a local function so
+        // unknown extensions (which return no signatures and are never enumerated)
+        // do not leak an open handle on arbitrary payloads stored in a database
+        // directory.
+        IEnumerable<string> Lines() => File.ReadLines(path);
+        var extension = Path.GetExtension(path).ToLowerInvariant();
+        return extension switch
+        {
+            ".hdb" or ".hsb" or ".hdu" or ".hsu" or ".fp" or ".sfp" or ".mdb" or ".msb" or ".mdu" or ".msu" or ".imp"
+                => HashSignatureParser.ParseHashLines(Lines(), path, engineFunctionalityLevel),
+            ".ndb" or ".ndu" => NdbSignatureParser.ParseNdbLines(Lines(), path, engineFunctionalityLevel),
+            ".sdb" => NdbSignatureParser.ParseNdbLines(Lines(), path, engineFunctionalityLevel, selfProtection: true),
+            ".ldb" or ".ldu" => LdbSignatureParser.ParseLdbLines(Lines(), path, engineFunctionalityLevel),
+            ".zmd" => ContainerSignatureParser.ParseMetadataLines(Lines(), path, "ZIP"),
+            ".rmd" => ContainerSignatureParser.ParseMetadataLines(Lines(), path, "RAR"),
+            ".cdb" => ContainerSignatureParser.ParseCdbLines(Lines(), path, engineFunctionalityLevel),
+            ".db" => ParseDbLines(Lines(), path),
+            ".idb" => Array.Empty<Signature>(),
+            _ => Array.Empty<Signature>()
+        };
+    }
 
     public static IEnumerable<Signature> ParseLines(IEnumerable<string> lines, string virtualPath, int engineFunctionalityLevel = 234)
     {

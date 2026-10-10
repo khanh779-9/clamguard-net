@@ -22,8 +22,34 @@ public sealed partial class ScannerEngine
 {
     private readonly DatabaseManager _databaseManager;
     private readonly ConcurrentDictionary<string, Lazy<IContentScanner>> _optionalScannerCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly object _preparedLock = new();
+    private CompiledState? _preparedState;
+    private PreparedScanRules? _preparedRules;
 
     public ScannerEngine(DatabaseManager databaseManager) => _databaseManager = databaseManager;
+
+    /// <summary>
+    /// Returns the per-generation prepared view of the database. Building it is
+    /// O(signatures); scans must not repeat that work for every file.
+    /// </summary>
+    private PreparedScanRules GetPreparedRules(CompiledState state)
+    {
+        if (ReferenceEquals(Volatile.Read(ref _preparedState), state))
+        {
+            var cached = Volatile.Read(ref _preparedRules);
+            if (cached is not null) return cached;
+        }
+
+        lock (_preparedLock)
+        {
+            if (ReferenceEquals(_preparedState, state) && _preparedRules is not null)
+                return _preparedRules;
+            var built = PreparedScanRules.Build(state);
+            _preparedRules = built;
+            _preparedState = state;
+            return built;
+        }
+    }
 
     public ScanResult Scan(string path, ScanOptions? options = null)
         => ScanAsync(path, options).GetAwaiter().GetResult();
@@ -54,14 +80,11 @@ public sealed partial class ScannerEngine
             if (info.Length == 0)
                 return new ScanResult(ScanVerdict.Clean, path, DetectType(path), [], 0, started.Elapsed, state.Database.Databases.FirstOrDefault());
 
-            var ndbSignatures = state.Database.Signatures.OfType<NdbSignature>().ToArray();
-            var logicalSignatures = state.Database.Signatures.OfType<LogicalSignature>().ToArray();
-            var peSectionRules = state.Database.Signatures.OfType<HashSignature>()
-                .Where(x => PeSpecializedMatcher.IsSectionHash(x.SourceFile))
-                .ToArray();
-            var peImportRules = state.Database.Signatures.OfType<HashSignature>()
-                .Where(x => PeSpecializedMatcher.IsImportHash(x.SourceFile))
-                .ToArray();
+            var prepared = GetPreparedRules(state);
+            var ndbSignatures = prepared.NdbSignatures;
+            var logicalSignatures = prepared.LogicalSignatures;
+            var peSectionRules = prepared.PeSectionRules;
+            var peImportRules = prepared.PeImportRules;
 
             // Container signatures such as ISO/UDF can be located well beyond the
             // first few KiB. Probe enough of the front of the file to classify them
@@ -150,20 +173,14 @@ public sealed partial class ScannerEngine
             }
 
             var signatureFileType = rootType.Equals("Unknown", StringComparison.OrdinalIgnoreCase) ? "OTHER" : rootType;
-            var applicableRawNdb = ndbSignatures
-                .Where(x => x.MacroGroup is null && LdbRuntime.TargetMatchesFileType(x.Target, signatureFileType))
-                .ToArray();
-            var streamableNdb = applicableRawNdb.Where(x => ScanTypePolicy.CanStreamRawNdb(x, signatureFileType)).ToHashSet();
-            var fixedNdbCandidateRules = applicableRawNdb
-                .Where(x => !streamableNdb.Contains(x) &&
-                            x.Pattern.IsFixed &&
-                            !ScanTypePolicy.IsNormalizedTarget(x.Target))
-                .ToHashSet();
+            var ndbRules = prepared.GetNdbRules(signatureFileType);
+            var streamableNdb = ndbRules.Streamable;
+            var fixedNdbCandidateRules = ndbRules.FixedCandidates;
             var matchedFixedNdbCandidates = new HashSet<NdbSignature>();
             // Only an applicable, non-streamable NDB rule can require the expensive
             // second pass. Macro NDB entries are logical-signature ingredients and are
             // already covered when logical signatures are evaluated.
-            var requiresFullNdbEvaluation = applicableRawNdb.Any(x => !streamableNdb.Contains(x));
+            var requiresFullNdbEvaluation = ndbRules.RequiresFullNdbEvaluation;
             var requiresContainerExpansion = ScanTypePolicy.IsArchiveContainer(rootType) &&
                                              ScanTypePolicy.ShouldParseContainer(rootType, options);
             var requiresMachOFat = ScanTypePolicy.IsMachO(rootType) && ScanTypePolicy.LooksLikeMachOFat(probe);
@@ -178,10 +195,8 @@ public sealed partial class ScannerEngine
             // raw matcher and later target-specific passes. PE/ELF/Mach-O keep the raw-
             // first path, matching cli_magic_scan()'s executable ordering.
             var requiresPeFullBuffer = options.ScanPE && peImportRules.Length != 0 && ScanTypePolicy.IsPe(rootType);
-            var requiresLogicalFullBuffer = HasApplicableLogicalSignatures(
-                logicalSignatures,
-                signatureFileType,
-                info.Length);
+            var rootLogicalCandidates = prepared.GetLogicalSignatures(signatureFileType);
+            var requiresLogicalFullBuffer = HasApplicableLogicalSignatures(rootLogicalCandidates, info.Length);
             var needsFullBuffer = requiresLogicalFullBuffer || requiresFullNdbEvaluation ||
                                   requiresPeFullBuffer || requiresContainerExpansion ||
                                   requiresMachOFat || requiresSpecializedPreRaw ||
@@ -299,9 +314,7 @@ public sealed partial class ScannerEngine
 
                 if (logicalSignatures.Length != 0 || ndbSignatures.Length != 0)
                 {
-                    IEnumerable<NdbSignature> materializedNdb = ndbSignatures
-                        .Where(x => x.MacroGroup is null &&
-                                    LdbRuntime.TargetMatchesFileType(x.Target, signatureFileType));
+                    IEnumerable<NdbSignature> materializedNdb = prepared.GetNdbRules(signatureFileType).ApplicableRaw;
                     if (!containerPreScanned)
                     {
                         materializedNdb = materializedNdb.Where(x =>
@@ -320,9 +333,8 @@ public sealed partial class ScannerEngine
                         scanOptions: options));
                     if (!options.CollectAllMatches && options.HasBlockingDetections(detections))
                         return CreateDetectionResult(path, rootType, detections, rawMatch.BytesRead, started.Elapsed, state.Database.Databases.FirstOrDefault(), options);
-                    var applicableLogical = logicalSignatures
-                        .Where(x => LdbRuntime.TargetMatchesFileType(x.Target?.Target ?? 0, signatureFileType) &&
-                                    (x.Target?.MinFileSize is null || fullData.Length >= x.Target.MinFileSize.Value) &&
+                    var applicableLogical = prepared.GetLogicalSignatures(signatureFileType)
+                        .Where(x => (x.Target?.MinFileSize is null || fullData.Length >= x.Target.MinFileSize.Value) &&
                                     (x.Target?.MaxFileSize is null || fullData.Length <= x.Target.MaxFileSize.Value))
                         .ToArray();
 
@@ -436,17 +448,14 @@ public sealed partial class ScannerEngine
     }
 
     private static bool HasApplicableLogicalSignatures(
-        IReadOnlyList<LogicalSignature> signatures,
-        string fileType,
+        LogicalSignature[] candidates,
         long fileSize)
     {
-        foreach (var signature in signatures)
+        foreach (var signature in candidates)
         {
             var target = signature.Target;
             if (target is null)
                 return true;
-            if (target.Target != 0 && !LdbRuntime.TargetMatchesFileType(target.Target, fileType))
-                continue;
             if (target.MinFileSize is not null && fileSize < target.MinFileSize.Value)
                 continue;
             if (target.MaxFileSize is not null && fileSize > target.MaxFileSize.Value)
@@ -472,10 +481,18 @@ public sealed partial class ScannerEngine
         if (length < 0 || length > int.MaxValue)
             throw new InvalidDataException("File is too large to materialize in the managed scan path.");
 
+        var buffer = new byte[length];
         await using var input = File.OpenRead(path);
-        using var buffer = new MemoryStream((int)length);
-        await input.CopyToAsync(buffer, cancellationToken);
-        return buffer.ToArray();
+        var totalRead = 0;
+        while (totalRead < buffer.Length)
+        {
+            var read = await input.ReadAsync(buffer.AsMemory(totalRead), cancellationToken);
+            if (read == 0) break;
+            totalRead += read;
+        }
+        if (totalRead != buffer.Length)
+            Array.Resize(ref buffer, totalRead);
+        return buffer;
     }
 
     private ScanOptions CreateEffectiveOptions(ScanOptions options)

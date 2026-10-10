@@ -86,6 +86,7 @@ internal static partial class Program
         var lookaroundRejected = false;
         try { _ = SignatureParser.ParseFile(zmdLookaroundPath).ToList(); }
         catch (FormatException) { lookaroundRejected = true; }
+        File.Delete(zmdLookaroundPath);
         Assert(lookaroundRejected, "ZMD rejects .NET lookaround syntax unsupported by POSIX ERE");
 
         var zmdMethodPath = Path.Combine(mdDir, "method.zmd");
@@ -108,14 +109,16 @@ internal static partial class Program
                     File.WriteAllText(zmdSignedNumericPath, "Metadata.Zip.SignedNumeric:+1:hello\\.txt:5:5:*:0:1:*");
                     var signedNumericRejected = false;
                     try { _ = zmdEncryptedManager.LoadAndCompile(mdDir, true); }
-                    catch (FormatException) { signedNumericRejected = true; }
+                    catch (InvalidDataException) { signedNumericRejected = true; }
+                    File.Delete(zmdSignedNumericPath);
                     Assert(signedNumericRejected, "ZMD numeric fields reject signs because ClamAV cli_isnumber accepts digits only");
 
                     var zmdOverflowPath = Path.Combine(mdDir, "overflow-numeric.zmd");
                     File.WriteAllText(zmdOverflowPath, "Metadata.Zip.OverflowNumeric:0:hello\\.txt:4294967295:5:*:0:1:*");
                     var overflowRejected = false;
                     try { _ = zmdEncryptedManager.LoadAndCompile(mdDir, true); }
-                    catch (FormatException) { overflowRejected = true; }
+                    catch (InvalidDataException) { overflowRejected = true; }
+                    File.Delete(zmdOverflowPath);
                     Assert(overflowRejected, "ZMD int-backed numeric fields reject values outside ClamAV atoi/int range");
 
                     var zmdEmptyNumericPath = Path.Combine(mdDir, "empty-numeric.zmd");
@@ -146,6 +149,7 @@ internal static partial class Program
         var zmdRes1OddRejected = false;
         try { _ = SignatureParser.ParseFile(zmdRes1OddPath).ToList(); }
         catch (FormatException) { zmdRes1OddRejected = true; }
+        File.Delete(zmdRes1OddPath);
         Assert(zmdRes1OddRejected, "ZMD odd-length Res1 is rejected like cli_hex2num");
 
         var zmdRes1LongPath = Path.Combine(mdDir, "res1-long.zmd");
@@ -167,6 +171,7 @@ internal static partial class Program
         var zmdWhitespaceRejected = false;
         try { _ = SignatureParser.ParseFile(zmdWhitespacePath).ToList(); }
         catch (FormatException) { zmdWhitespaceRejected = true; }
+        File.Delete(zmdWhitespacePath);
         Assert(zmdWhitespaceRejected, "ZMD preserves leading/trailing spaces instead of Trim()-normalizing signature fields");
 
         var zmdLeadingCommentPath = Path.Combine(mdDir, "leading-space-comment.zmd");
@@ -174,6 +179,7 @@ internal static partial class Program
         var zmdLeadingCommentRejected = false;
         try { _ = SignatureParser.ParseFile(zmdLeadingCommentPath).ToList(); }
         catch (FormatException) { zmdLeadingCommentRejected = true; }
+        File.Delete(zmdLeadingCommentPath);
         Assert(zmdLeadingCommentRejected, "ZMD only treats '#' in column zero as a comment");
 
         var zmdTrailingFieldPath = Path.Combine(mdDir, "trailing-field.zmd");
@@ -181,6 +187,7 @@ internal static partial class Program
         var zmdTrailingFieldRejected = false;
         try { _ = SignatureParser.ParseFile(zmdTrailingFieldPath).ToList(); }
         catch (FormatException) { zmdTrailingFieldRejected = true; }
+        File.Delete(zmdTrailingFieldPath);
         Assert(zmdTrailingFieldRejected, "ZMD rejects extra fields beyond the exact nine-field cli_loadmd format");
 
         var zmdEmptyLinePath = Path.Combine(mdDir, "empty-line.zmd");
@@ -188,6 +195,7 @@ internal static partial class Program
         var zmdEmptyLineRejected = false;
         try { _ = SignatureParser.ParseFile(zmdEmptyLinePath).ToList(); }
         catch (FormatException) { zmdEmptyLineRejected = true; }
+        File.Delete(zmdEmptyLinePath);
         Assert(zmdEmptyLineRejected, "ZMD empty lines are parsed as malformed records rather than silently skipped");
 
         var zmdRangeRejectedPath = Path.Combine(mdDir, "range-rejected.zmd");
@@ -197,10 +205,11 @@ internal static partial class Program
         {
             new DatabaseLoader().LoadDirectory(mdDir, failOnInvalidFile: true, verifyContainers: false);
         }
-        catch (FormatException)
+        catch (InvalidDataException)
         {
             zmdRangeRejected = true;
         }
+        File.Delete(zmdRangeRejectedPath);
         Assert(zmdRangeRejected, "ZMD range syntax is rejected because cli_loadmd accepts exact numeric fields only");
 
         var zmdMaxDepthPath = Path.Combine(mdDir, "maxdepth-ignored.zmd");

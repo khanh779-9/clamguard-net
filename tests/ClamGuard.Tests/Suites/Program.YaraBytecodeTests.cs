@@ -13,7 +13,7 @@ internal static partial class Program
         File.WriteAllText(Path.Combine(yaraDir, "integration.yar"), "rule NestedYara { strings: $x = \"NESTED-YARA\" condition: $x }");
         var nestedDb = Path.Combine(Path.GetTempPath(), "clamguard-yara-db-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(nestedDb);
-        File.WriteAllText(Path.Combine(nestedDb, "dummy.ndb"), "Dummy.Ndb;Engine:81-255,Target:0;0;");
+        File.WriteAllText(Path.Combine(nestedDb, "dummy.ndb"), "Dummy.Ndb:0:0:00\n");
         var nestedZipPath = Path.Combine(Path.GetTempPath(), "nested-yara.zip");
         File.WriteAllBytes(nestedZipPath, CreateZipEntry("inside.txt", Encoding.ASCII.GetBytes("NESTED-YARA")));
         var nestedManager = new DatabaseManager();
