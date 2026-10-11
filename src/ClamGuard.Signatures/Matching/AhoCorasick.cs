@@ -1,3 +1,5 @@
+using System.Runtime.CompilerServices;
+
 namespace ClamGuard.Signatures.Matching;
 
 /// <summary>
@@ -5,6 +7,10 @@ namespace ClamGuard.Signatures.Matching;
 /// Transitions and output links use compact integer-indexed arrays/lists instead
 /// of allocating a Dictionary and List for every trie node. This matters when
 /// loading large ClamAV databases with hundreds of thousands of fixed patterns.
+///
+/// After Build(), the trie is frozen into contiguous arrays for cache-friendly
+/// access and the top N depth layers are DFA-flattened into dense int[256]
+/// tables, making Advance() O(1) for the most frequently visited states.
 /// </summary>
 public sealed class AhoCorasickMatcher
 {
@@ -46,6 +52,27 @@ public sealed class AhoCorasickMatcher
     private readonly int[] _rootTransitions = CreateRootTransitions();
     private bool _built;
 
+    // Frozen arrays: after Build(), list contents are snapshot into arrays
+    // for cache-friendly contiguous access in the hot scan loop.
+    private Node[] _frozenNodes = [];
+    private Edge[] _frozenEdges = [];
+    private OutputEntry[] _frozenOutputs = [];
+
+    // DFA-flattened dense transition tables for the top trie layers.
+    // _denseThreshold is the first state index NOT backed by a dense table.
+    // States [0 .. _denseThreshold-1] use _denseTransitions[stateIndex * 256 + byte]
+    // for O(1) transition lookup instead of edge-list traversal.
+    private int[] _denseTransitions = [];
+    private int _denseThreshold;
+
+    /// <summary>
+    /// Controls the maximum number of states that receive a dense int[256]
+    /// transition table. Higher values trade RAM for speed. With ClamAV-sized
+    /// databases the trie typically has 500K–2M states; flattening the first
+    /// 8192 (32 MiB) covers the busiest part of the automaton.
+    /// </summary>
+    private const int MaxDenseStates = 8192;
+
     public int StateCount => _nodes.Count;
 
     public void Add(ReadOnlySpan<byte> pattern, int id)
@@ -58,7 +85,7 @@ public sealed class AhoCorasickMatcher
         var state = 0;
         foreach (var value in pattern)
         {
-            var next = FindTransition(state, value);
+            var next = FindTransitionBuild(state, value);
             if (next < 0)
             {
                 next = _nodes.Count;
@@ -107,11 +134,11 @@ public sealed class AhoCorasickMatcher
                 queue.Enqueue(edge.Target);
 
                 var failureState = current.Fail;
-                var fallback = FindTransition(failureState, edge.Value);
+                var fallback = FindTransitionBuild(failureState, edge.Value);
                 while (failureState != 0 && fallback < 0)
                 {
                     failureState = _nodes[failureState].Fail;
-                    fallback = FindTransition(failureState, edge.Value);
+                    fallback = FindTransitionBuild(failureState, edge.Value);
                 }
 
                 var childFailure = fallback >= 0 && fallback != edge.Target ? fallback : 0;
@@ -127,7 +154,54 @@ public sealed class AhoCorasickMatcher
             }
         }
 
+        // Freeze lists into contiguous arrays for cache-friendly hot-loop access.
+        _frozenNodes = _nodes.ToArray();
+        _frozenEdges = _edges.ToArray();
+        _frozenOutputs = _outputs.ToArray();
+
+        // Build DFA-flattened dense transition tables for the first N states.
+        // This eliminates edge-list traversal for the most-visited trie nodes.
+        BuildDenseTransitions();
+
         _built = true;
+    }
+
+    private void BuildDenseTransitions()
+    {
+        var stateCount = _frozenNodes.Length;
+        _denseThreshold = Math.Min(stateCount, MaxDenseStates);
+        if (_denseThreshold <= 1)
+        {
+            // Only root – the root already has _rootTransitions.
+            _denseThreshold = 0;
+            _denseTransitions = [];
+            return;
+        }
+
+        _denseTransitions = new int[_denseThreshold * 256];
+        Array.Fill(_denseTransitions, -1);
+
+        for (var state = 0; state < _denseThreshold; state++)
+        {
+            var baseIndex = state * 256;
+
+            if (state == 0)
+            {
+                // Root: copy from _rootTransitions
+                Array.Copy(_rootTransitions, 0, _denseTransitions, baseIndex, 256);
+            }
+            else
+            {
+                // Non-root: walk the edge list
+                for (var edgeIndex = _frozenNodes[state].FirstEdge;
+                     edgeIndex >= 0;
+                     edgeIndex = _frozenEdges[edgeIndex].Next)
+                {
+                    var edge = _frozenEdges[edgeIndex];
+                    _denseTransitions[baseIndex + edge.Value] = edge.Target;
+                }
+            }
+        }
     }
 
     /// <summary>
@@ -138,23 +212,25 @@ public sealed class AhoCorasickMatcher
     {
         Build();
         var matched = new HashSet<int>();
-        if (data.IsEmpty || _nodes.Count == 1)
+        if (data.IsEmpty || _frozenNodes.Length == 1)
             return matched;
 
+        var nodes = _frozenNodes;
+        var outputs = _frozenOutputs;
         var state = 0;
         for (var i = 0; i < data.Length; i++)
         {
-            state = Advance(state, data[i]);
+            state = AdvanceFrozen(state, data[i]);
             var outputState = state;
             while (outputState >= 0)
             {
-                for (var outputIndex = _nodes[outputState].FirstOutput;
+                for (var outputIndex = nodes[outputState].FirstOutput;
                      outputIndex >= 0;
-                     outputIndex = _outputs[outputIndex].Next)
+                     outputIndex = outputs[outputIndex].Next)
                 {
-                    matched.Add(_outputs[outputIndex].PatternId);
+                    matched.Add(outputs[outputIndex].PatternId);
                 }
-                outputState = _nodes[outputState].OutputLink;
+                outputState = nodes[outputState].OutputLink;
             }
         }
 
@@ -165,24 +241,26 @@ public sealed class AhoCorasickMatcher
     {
         ArgumentNullException.ThrowIfNull(matches);
         Build();
-        if ((uint)state >= (uint)_nodes.Count)
+        if ((uint)state >= (uint)_frozenNodes.Length)
             state = 0;
 
+        var nodes = _frozenNodes;
+        var outputs = _frozenOutputs;
         for (var i = 0; i < data.Length; i++)
         {
-            state = Advance(state, data[i]);
+            state = AdvanceFrozen(state, data[i]);
             var outputState = state;
 
             while (outputState >= 0)
             {
-                for (var outputIndex = _nodes[outputState].FirstOutput;
+                for (var outputIndex = nodes[outputState].FirstOutput;
                      outputIndex >= 0;
-                     outputIndex = _outputs[outputIndex].Next)
+                     outputIndex = outputs[outputIndex].Next)
                 {
-                    matches.Add((_outputs[outputIndex].PatternId, baseOffset + i));
+                    matches.Add((outputs[outputIndex].PatternId, baseOffset + i));
                 }
 
-                outputState = _nodes[outputState].OutputLink;
+                outputState = nodes[outputState].OutputLink;
             }
         }
     }
@@ -201,47 +279,79 @@ public sealed class AhoCorasickMatcher
     {
         ArgumentNullException.ThrowIfNull(onMatch);
         Build();
-        if ((uint)state >= (uint)_nodes.Count)
+        if ((uint)state >= (uint)_frozenNodes.Length)
             state = 0;
 
+        var nodes = _frozenNodes;
+        var outputs = _frozenOutputs;
         for (var i = 0; i < data.Length; i++)
         {
-            state = Advance(state, data[i]);
+            state = AdvanceFrozen(state, data[i]);
             var outputState = state;
 
             while (outputState >= 0)
             {
-                for (var outputIndex = _nodes[outputState].FirstOutput;
+                for (var outputIndex = nodes[outputState].FirstOutput;
                      outputIndex >= 0;
-                     outputIndex = _outputs[outputIndex].Next)
+                     outputIndex = outputs[outputIndex].Next)
                 {
-                    var patternId = _outputs[outputIndex].PatternId;
+                    var patternId = outputs[outputIndex].PatternId;
                     if (ignoredPatternIds is { Count: > 0 } && ignoredPatternIds.Contains(patternId))
                         continue;
                     if (onMatch(patternId, baseOffset + i))
                         return true;
                 }
 
-                outputState = _nodes[outputState].OutputLink;
+                outputState = nodes[outputState].OutputLink;
             }
         }
 
         return false;
     }
 
-    private int Advance(int state, byte value)
+    /// <summary>
+    /// Frozen Advance: uses DFA-flattened dense tables for states below the
+    /// threshold, falls back to edge-list traversal for deeper states.
+    /// All access is against the frozen arrays for cache-friendly layout.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private int AdvanceFrozen(int state, byte value)
     {
-        var next = FindTransition(state, value);
+        var next = FindTransitionFrozen(state, value);
         while (state != 0 && next < 0)
         {
-            state = _nodes[state].Fail;
-            next = FindTransition(state, value);
+            state = _frozenNodes[state].Fail;
+            next = FindTransitionFrozen(state, value);
         }
 
         return next >= 0 ? next : 0;
     }
 
-    private int FindTransition(int state, byte value)
+    /// <summary>
+    /// O(1) for states in the dense-flattened region, O(degree) for deeper states.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private int FindTransitionFrozen(int state, byte value)
+    {
+        if ((uint)state < (uint)_denseThreshold)
+            return _denseTransitions[state * 256 + value];
+
+        for (var edgeIndex = _frozenNodes[state].FirstEdge;
+             edgeIndex >= 0;
+             edgeIndex = _frozenEdges[edgeIndex].Next)
+        {
+            var edge = _frozenEdges[edgeIndex];
+            if (edge.Value == value)
+                return edge.Target;
+        }
+
+        return -1;
+    }
+
+    /// <summary>
+    /// Build-time transition lookup (before freezing). Uses the mutable lists.
+    /// </summary>
+    private int FindTransitionBuild(int state, byte value)
     {
         if (state == 0)
             return _rootTransitions[value];

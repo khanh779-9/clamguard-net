@@ -1,7 +1,9 @@
+using ClamGuard.Core;
+
 namespace ClamGuard.Signatures;
 
 public sealed record LdbTargetDescription(
-    int Target = 0,
+    SignatureTargetType Target = SignatureTargetType.Any,
     long? MinFileSize = null,
     long? MaxFileSize = null,
     long? MinEntryPoint = null,
@@ -15,4 +17,7 @@ public sealed record LdbTargetDescription(
     string? IconGroup2 = null,
     int? MinimumFunctionalityLevel = null,
     int? MaximumFunctionalityLevel = null,
-    bool TargetSpecified = false);
+    bool TargetSpecified = false)
+{
+    public SignatureTargetType TargetType => Target;
+}

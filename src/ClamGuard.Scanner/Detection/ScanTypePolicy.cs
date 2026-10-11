@@ -95,6 +95,9 @@ internal static class ScanTypePolicy
     public static bool IsText(string fileType)
         => fileType is "ASCII" or "HTML" or "HTML_UTF16" or "TEXT_UTF16LE" or "TEXT_UTF16BE" or "JAVA" or "SCRIPT" or "PS";
 
+    public static bool IsNormalizedTarget(SignatureTargetType target)
+        => target is SignatureTargetType.Html or SignatureTargetType.Ascii;
+
     public static bool IsNormalizedTarget(int target)
         => target is 3 or 7;
 
@@ -130,10 +133,10 @@ internal static class ScanTypePolicy
         if (int.TryParse(value, out var absolute))
             return absolute >= 0;
 
-        var parts = value.Split(',', 2, StringSplitOptions.TrimEntries);
-        return parts.Length == 2 &&
-               int.TryParse(parts[0], out var min) &&
-               int.TryParse(parts[1], out var max) &&
+        var comma = value.IndexOf(',');
+        return comma > 0 && comma < value.Length - 1 &&
+               int.TryParse(value.AsSpan(0, comma).Trim(), out var min) &&
+               int.TryParse(value.AsSpan(comma + 1).Trim(), out var max) &&
                min >= 0 && max >= min;
     }
 

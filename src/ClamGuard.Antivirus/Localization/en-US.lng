@@ -68,7 +68,18 @@ loading_db=Loading signature database in background...
 
 [scan]
 scan_files=SCAN FILES
-scan_files_desc=Choose a file or folder, then start an on-demand scan.
+scan_files_desc=Pick a file or folder, or launch one of the parallel scan modes.
+modes=SCAN MODES
+smart=Smart Scan
+smart_desc=Windows, Program Files, ProgramData and AppData locations
+critical=Critical Scan
+critical_desc=System32, drivers, temp and startup locations
+memory=Memory Scan
+memory_desc=Running process memory (raw patterns and hashes)
+startup=Startup Scan
+startup_desc=Run keys, Startup folders and auto-start services
+active_tasks=ACTIVE TASKS
+start=Start
 file_scan=File scan
 file_scan_desc=Inspect one file with all available signature sources.
 folder_scan=Folder scan

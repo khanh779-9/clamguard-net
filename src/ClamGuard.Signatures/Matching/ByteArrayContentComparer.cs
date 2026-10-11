@@ -17,14 +17,12 @@ internal sealed class ByteArrayContentComparer : IEqualityComparer<byte[]>
     public int GetHashCode(byte[] obj)
     {
         ArgumentNullException.ThrowIfNull(obj);
-        unchecked
-        {
-            // A cheap 32-bit content hash over the complete digest. Digest lengths
-            // are fixed and small (16/20/32 bytes) so this stays inexpensive.
-            var hash = 17;
-            foreach (var b in obj)
-                hash = (hash * 31) + b;
-            return hash;
-        }
+        // Use the runtime's vectorized xxHash-based combiner. It hashes
+        // 16/20/32-byte digests in a handful of SIMD iterations instead of
+        // the byte-by-byte multiply-add loop, and provides better
+        // distribution to reduce hash-bucket collisions.
+        var hc = new HashCode();
+        hc.AddBytes(obj);
+        return hc.ToHashCode();
     }
 }

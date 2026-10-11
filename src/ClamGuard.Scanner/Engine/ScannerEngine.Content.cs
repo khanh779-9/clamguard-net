@@ -52,7 +52,8 @@ public sealed partial class ScannerEngine
             collectAllMatches: (options.CollectAllMatches || !options.DetectPUA),
             ndbFilter: useCombinedNdbIndex ? streamableNdb.Contains : null,
             ndbPatternCandidates: matchedFixedNdbCandidates,
-            ndbCandidateFilter: fixedNdbCandidateRules.Contains));
+            ndbCandidateFilter: fixedNdbCandidateRules.Contains,
+            targetGroup: SignatureTargetGroups.FromFileType(fileType)));
         detections.AddRange(EvaluateNdb(
             applicableRawNdb.Where(x =>
                 !streamableNdb.Contains(x) &&
@@ -189,6 +190,30 @@ public sealed partial class ScannerEngine
         }
         return results;
     }
+
+    // Group-evaluation wrappers used by the concurrent signature-group pass in
+    // ScanAsync: ReadOnlySpan parameters cannot be captured by Task.Run closures,
+    // so the buffered entry points receive byte[] and re-slice internally.
+    internal static IReadOnlyList<Detection> EvaluateNdbBuffered(
+        NdbSignature[] signatures,
+        byte[] data,
+        ScanLimits limits,
+        string fileType,
+        CancellationToken cancellationToken,
+        ScanOptions? scanOptions)
+        => EvaluateNdb(signatures, data, limits, fileType, cancellationToken, scanOptions);
+
+    internal static IReadOnlyList<Detection> EvaluateLogicalBuffered(
+        LogicalSignature[] signatures,
+        NdbSignature[] ndbSignatures,
+        byte[] data,
+        ScanLimits limits,
+        string fileType,
+        IconDatabase? iconDatabase,
+        CancellationToken cancellationToken,
+        CompiledState scanState,
+        ScanOptions? scanOptions)
+        => EvaluateLogical(signatures, ndbSignatures, data, limits, fileType, iconDatabase, [], cancellationToken, scanState: scanState, scanOptions: scanOptions);
 
     internal static IReadOnlyList<Detection> EvaluateLogical(
         IEnumerable<LogicalSignature> signatures,

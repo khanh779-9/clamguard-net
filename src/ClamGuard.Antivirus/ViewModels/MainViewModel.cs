@@ -18,6 +18,8 @@ public sealed partial class MainViewModel : INotifyPropertyChanged
     private readonly SystemInspectorService _systemInspector = new();
     private readonly QuarantineService _quarantine = new();
     private readonly ActiveTaskTracker _tracker = new();
+    private readonly MemoryScanService _memoryScan;
+    private readonly StartupScanService _startupScan = new();
     private int _lastCompletedScanned;
     private int _lastCompletedTotal;
     private int _lastCompletedThreats;
@@ -55,6 +57,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged
     public MainViewModel(AntivirusEngineService engine)
     {
         _engine = engine;
+        _memoryScan = new MemoryScanService((data, label, ct) => _engine.ScanMemoryBufferAsync(data, label, ct));
         RefreshLocalizedUi();
         LocalizationService.Instance.LanguageChanged += (_, _) => RefreshLocalizedUi();
 
@@ -63,6 +66,10 @@ public sealed partial class MainViewModel : INotifyPropertyChanged
 
         QuickScanCommand = new RelayCommand(() => QuickScanRequested?.Invoke(this, EventArgs.Empty), () => DatabaseReady);
         CustomScanCommand = new RelayCommand(() => CustomScanRequested?.Invoke(this, EventArgs.Empty), () => DatabaseReady);
+        SmartScanCommand = new RelayCommand(() => SmartScanRequested?.Invoke(this, EventArgs.Empty), () => DatabaseReady);
+        CriticalScanCommand = new RelayCommand(() => CriticalScanRequested?.Invoke(this, EventArgs.Empty), () => DatabaseReady);
+        MemoryScanCommand = new RelayCommand(() => MemoryScanRequested?.Invoke(this, EventArgs.Empty), () => DatabaseReady);
+        StartupScanCommand = new RelayCommand(() => StartupScanRequested?.Invoke(this, EventArgs.Empty), () => DatabaseReady);
         UpdateCommand = new RelayCommand(() => UpdateRequested?.Invoke(this, EventArgs.Empty));
         ConfigureSecurityCommand = new RelayCommand(() => ConfigureSecurityRequested?.Invoke(this, EventArgs.Empty));
         OpenToolsCommand = new RelayCommand(() => OpenToolsRequested?.Invoke(this, EventArgs.Empty));
@@ -84,12 +91,17 @@ public sealed partial class MainViewModel : INotifyPropertyChanged
         DeleteSelectedQuarantineCommand = new RelayCommand(() => { if (SelectedQuarantineItem is { } item) DeleteQuarantineRequested?.Invoke(this, item); }, () => SelectedQuarantineItem is not null);
         RefreshQuarantineCommand = new RelayCommand(RefreshQuarantine);
         CancelScanCommand = new RelayCommand(() => CancelScanRequested?.Invoke(this, EventArgs.Empty), () => IsScanning);
+        CancelTaskCommand = new ParameterRelayCommand<ActiveTaskItem>(item => item.Cancel());
         ApplyScanActionsCommand = new AsyncRelayCommand(ApplyScanActionsAsync, () => CurrentScanResults.Any(x => !x.IsProcessed));
         BackToScanCommand = new RelayCommand(() => IsShowingScanResults = false);
     }
 
     public event EventHandler? QuickScanRequested;
     public event EventHandler? CustomScanRequested;
+    public event EventHandler? SmartScanRequested;
+    public event EventHandler? CriticalScanRequested;
+    public event EventHandler? MemoryScanRequested;
+    public event EventHandler? StartupScanRequested;
     public event EventHandler? CancelScanRequested;
     public event EventHandler? UpdateRequested;
     public event EventHandler? ConfigureSecurityRequested;
@@ -110,6 +122,10 @@ public sealed partial class MainViewModel : INotifyPropertyChanged
 
     public ICommand QuickScanCommand { get; }
     public ICommand CustomScanCommand { get; }
+    public ICommand SmartScanCommand { get; }
+    public ICommand CriticalScanCommand { get; }
+    public ICommand MemoryScanCommand { get; }
+    public ICommand StartupScanCommand { get; }
     public ICommand UpdateCommand { get; }
     public ICommand ConfigureSecurityCommand { get; }
     public ICommand OpenToolsCommand { get; }
@@ -131,11 +147,13 @@ public sealed partial class MainViewModel : INotifyPropertyChanged
     public ICommand DeleteSelectedQuarantineCommand { get; }
     public ICommand RefreshQuarantineCommand { get; }
     public ICommand CancelScanCommand { get; }
+    public ICommand CancelTaskCommand { get; }
     public ICommand ApplyScanActionsCommand { get; }
     public ICommand BackToScanCommand { get; }
 
     public ObservableCollection<ScanResultRowItem> CurrentScanResults { get; } = [];
     public ObservableCollection<ScanHistoryItem> RecentScans { get; } = [];
+    public ObservableCollection<ActiveTaskItem> ActiveTasks => _tracker.ActiveTasks;
     public ObservableCollection<ProcessSnapshotItem> RunningProcesses { get; } = [];
     public ObservableCollection<StartupSnapshotItem> StartupItems { get; } = [];
     public ObservableCollection<NetworkSnapshotItem> NetworkAdapters { get; } = [];

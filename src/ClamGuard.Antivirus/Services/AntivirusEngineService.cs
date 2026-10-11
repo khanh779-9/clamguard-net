@@ -75,6 +75,10 @@ public sealed class AntivirusEngineService : IAsyncDisposable
     public Task<ScanResult> ScanFileAsync(string filePath, CancellationToken cancellationToken = default)
         => ScanFileAsync(filePath, CreateScanOptions(), cancellationToken);
 
+    /// <summary>Light buffer scan for memory regions (raw patterns + hashes).</summary>
+    public Task<ScanResult> ScanMemoryBufferAsync(byte[] data, string label, CancellationToken cancellationToken = default)
+        => Task.Run(() => _scanner.ScanMemoryBuffer(data, label, cancellationToken), cancellationToken);
+
     public async Task<ScanResult> ScanFileAsync(
         string filePath,
         ScanOptions scanOptions,

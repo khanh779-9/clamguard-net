@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using ClamGuard.Core;
 using ClamGuard.Signatures;
 using ClamGuard.Signatures.Patterns;
 
@@ -110,7 +111,7 @@ internal sealed class LogicalSignaturePrefilter
         // Targets 3 (HTML) and 7 (ASCII) can be scanned after normalization.
         // Searching the raw layer could reject a rule whose anchor only appears
         // after normalization, so keep those signatures on the ordinary path.
-        if (signature.Target?.Target is 3 or 7 ||
+        if (signature.Target?.Target is SignatureTargetType.Html or SignatureTargetType.Ascii ||
             !TryGetRequiredContentIndices(signature, out var requiredIndices))
         {
             return false;

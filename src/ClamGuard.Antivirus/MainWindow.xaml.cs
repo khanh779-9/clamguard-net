@@ -47,6 +47,19 @@ public partial class MainWindow : ClamGuardWindow
 
         _viewModel.QuickScanRequested += (_, _) => QuickScan();
         _viewModel.CustomScanRequested += (_, _) => CustomScan();
+        _viewModel.SmartScanRequested += (_, _) => RunPathScanMode(
+            () => _viewModel.SmartScanAsync(_lifetimeCts.Token),
+            App.Localization.Get("scan.smart"),
+            results => threatsToast(results));
+        _viewModel.CriticalScanRequested += (_, _) => RunPathScanMode(
+            () => _viewModel.CriticalScanAsync(_lifetimeCts.Token),
+            App.Localization.Get("scan.critical"),
+            results => threatsToast(results));
+        _viewModel.MemoryScanRequested += (_, _) => MemoryScan();
+        _viewModel.StartupScanRequested += (_, _) => RunPathScanMode(
+            () => _viewModel.StartupScanAsync(_lifetimeCts.Token),
+            App.Localization.Get("scan.startup"),
+            results => threatsToast(results));
         _viewModel.CancelScanRequested += (_, _) => CancelActiveScan();
         _viewModel.UpdateRequested += (_, _) => Update();
         _viewModel.ConfigureSecurityRequested += (_, _) => Navigate("Security");
@@ -184,6 +197,67 @@ public partial class MainWindow : ClamGuardWindow
         catch (OperationCanceledException)
         {
             _viewModel.PopulateScanResults([], App.Localization.Get("scan.cancelled"));
+            ShowToast(App.Localization.Get("toast.scan_stopped"), App.Localization.Get("scan.cancelled"), ToastKind.Warning);
+        }
+        catch (Exception ex)
+        {
+            ShowToast(App.Localization.Get("toast.scan_failed"), ex.Message, ToastKind.Error);
+        }
+    }
+
+    private async void RunPathScanMode(Func<Task<IReadOnlyList<ScanResult>>> scan, string title, Action<IReadOnlyList<ScanResult>> reportToast)
+    {
+        if (!_viewModel.DatabaseReady)
+        {
+            ShowToast(App.Localization.Get("toast.not_ready"), App.Localization.Get("toast.not_ready_body"), ToastKind.Warning);
+            return;
+        }
+
+        Navigate("Scan");
+        _viewModel.IsShowingScanResults = false;
+        try
+        {
+            var results = await scan();
+            _viewModel.PopulateScanResults(results, title);
+            reportToast(results);
+        }
+        catch (OperationCanceledException)
+        {
+            ShowToast(App.Localization.Get("toast.scan_stopped"), App.Localization.Get("scan.cancelled"), ToastKind.Warning);
+        }
+        catch (Exception ex)
+        {
+            ShowToast(App.Localization.Get("toast.scan_failed"), ex.Message, ToastKind.Error);
+        }
+    }
+
+    private void threatsToast(IReadOnlyList<ScanResult> results)
+    {
+        var threats = results.Count(x => x.Verdict is ScanVerdict.Malicious or ScanVerdict.PotentiallyUnwanted or ScanVerdict.StrongIndicator);
+        ShowToast(
+            threats > 0 ? App.Localization.Get("toast.threats_found") : App.Localization.Get("toast.scan_finished"),
+            threats > 0 ? App.Localization.Format("toast.threat_summary", results.Count, threats) : App.Localization.Format("toast.no_threats", results.Count),
+            threats > 0 ? ToastKind.Error : ToastKind.Success);
+    }
+
+    private async void MemoryScan()
+    {
+        if (!_viewModel.DatabaseReady)
+        {
+            ShowToast(App.Localization.Get("toast.not_ready"), App.Localization.Get("toast.not_ready_body"), ToastKind.Warning);
+            return;
+        }
+
+        Navigate("Scan");
+        _viewModel.IsShowingScanResults = false;
+        try
+        {
+            var results = await _viewModel.MemoryScanAsync(_lifetimeCts.Token);
+            _viewModel.PopulateScanResults(results, App.Localization.Get("scan.memory"));
+            threatsToast(results);
+        }
+        catch (OperationCanceledException)
+        {
             ShowToast(App.Localization.Get("toast.scan_stopped"), App.Localization.Get("scan.cancelled"), ToastKind.Warning);
         }
         catch (Exception ex)

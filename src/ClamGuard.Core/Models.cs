@@ -15,6 +15,28 @@ public enum SignatureType
     Ignore
 }
 
+/// <summary>
+/// ClamAV target type specification for NDB and LDB signatures.
+/// </summary>
+public enum SignatureTargetType
+{
+    Any = 0,
+    Pe = 1,
+    Ole2 = 2,
+    Html = 3,
+    Mail = 4,
+    Graphics = 5,
+    Elf = 6,
+    Ascii = 7,
+    Unused8 = 8,
+    MachO = 9,
+    Pdf = 10,
+    Flash = 11,
+    Java = 12,
+    Internal = 13,
+    Other = 14
+}
+
 public enum HashAlgorithmKind
 {
     Md5,

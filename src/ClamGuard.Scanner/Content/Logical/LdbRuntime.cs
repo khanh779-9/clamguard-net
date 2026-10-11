@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Collections.Frozen;
 using System.IO.Compression;
 using System.Reflection;
 using System.Text;
@@ -27,7 +28,7 @@ internal static class LdbRuntime
     {
         if (target is null)
             return true;
-        if (target.Target != 0 && !TargetMatchesFileType(target.Target, ctx.FileType))
+        if (target.Target != SignatureTargetType.Any && !TargetMatchesFileType(target.Target, ctx.FileType))
             return false;
         if (target.MinFileSize is not null && ctx.FileSize < target.MinFileSize.Value)
             return false;
@@ -85,27 +86,76 @@ internal static class LdbRuntime
         return true;
     }
 
-    public static bool TargetMatchesFileType(int target, LdbScanContext ctx) => TargetMatchesFileType(target, ctx.FileType);
-    public static bool TargetMatchesFileType(int target, string fileType) => target switch
+    // Precomputed bitmask table mapping uppercase file type to bitwise target mask.
+    // Each target T (0..14) corresponds to bit (1 << T). Target 0 (Any) matches every type.
+    private static readonly Dictionary<string, uint> FileTypeToTargetMask = new(StringComparer.OrdinalIgnoreCase)
     {
-        0 => true,
-        1 => fileType.Equals("PE", StringComparison.OrdinalIgnoreCase),
-        2 => fileType.Equals("OLE2", StringComparison.OrdinalIgnoreCase),
-        3 => fileType.Equals("HTML", StringComparison.OrdinalIgnoreCase),
-        4 => fileType.Equals("MAIL", StringComparison.OrdinalIgnoreCase),
-        5 => fileType is "GRAPHICS" or "GIF" or "PNG" or "JPEG" or "TIFF",
-        6 => fileType.Equals("ELF", StringComparison.OrdinalIgnoreCase),
-        7 => fileType.Equals("ASCII", StringComparison.OrdinalIgnoreCase),
-        8 => false,
-        9 => fileType is "MACH-O" or "MACHO" or "MACHO_UNIBIN",
-        10 => fileType.Equals("PDF", StringComparison.OrdinalIgnoreCase),
-        11 => fileType.Equals("FLASH", StringComparison.OrdinalIgnoreCase),
-        12 => fileType.Equals("JAVA", StringComparison.OrdinalIgnoreCase),
-        13 => fileType.Equals("INTERNAL", StringComparison.OrdinalIgnoreCase),
-        14 => fileType.Equals("OTHER", StringComparison.OrdinalIgnoreCase),
-        _ => false
+        ["PE"] = (1u << 0) | (1u << 1),
+        ["OLE2"] = (1u << 0) | (1u << 2),
+        ["HTML"] = (1u << 0) | (1u << 3),
+        ["MAIL"] = (1u << 0) | (1u << 4),
+        ["GRAPHICS"] = (1u << 0) | (1u << 5),
+        ["GIF"] = (1u << 0) | (1u << 5),
+        ["PNG"] = (1u << 0) | (1u << 5),
+        ["JPEG"] = (1u << 0) | (1u << 5),
+        ["TIFF"] = (1u << 0) | (1u << 5),
+        ["ELF"] = (1u << 0) | (1u << 6),
+        ["ASCII"] = (1u << 0) | (1u << 7),
+        ["MACH-O"] = (1u << 0) | (1u << 9),
+        ["MACHO"] = (1u << 0) | (1u << 9),
+        ["MACHO_UNIBIN"] = (1u << 0) | (1u << 9),
+        ["PDF"] = (1u << 0) | (1u << 10),
+        ["FLASH"] = (1u << 0) | (1u << 11),
+        ["JAVA"] = (1u << 0) | (1u << 12),
+        ["INTERNAL"] = (1u << 0) | (1u << 13),
+        ["OTHER"] = (1u << 0) | (1u << 14)
     };
 
+    // Precomputed O(1) table of compatible container aliases (expected -> actuals)
+    private static readonly Dictionary<string, System.Collections.Frozen.FrozenSet<string>> ContainerAliasMap = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["ZIP"] = new[] { "ZIP" }.ToFrozenSet(StringComparer.OrdinalIgnoreCase),
+        ["OLE2"] = new[] { "OLE2" }.ToFrozenSet(StringComparer.OrdinalIgnoreCase),
+        ["TAR"] = new[] { "TAR", "POSIX_TAR", "OLD_TAR" }.ToFrozenSet(StringComparer.OrdinalIgnoreCase),
+        ["MSSZDD"] = new[] { "MSSZDD", "SZDD" }.ToFrozenSet(StringComparer.OrdinalIgnoreCase),
+        ["MSCAB"] = new[] { "MSCAB", "CAB" }.ToFrozenSet(StringComparer.OrdinalIgnoreCase),
+        ["MSCHM"] = new[] { "MSCHM", "CHM" }.ToFrozenSet(StringComparer.OrdinalIgnoreCase),
+        ["MSOLE2"] = new[] { "MSOLE2", "OLE2" }.ToFrozenSet(StringComparer.OrdinalIgnoreCase),
+        ["ISO9660"] = new[] { "ISO9660", "ISO" }.ToFrozenSet(StringComparer.OrdinalIgnoreCase),
+        ["MSEXE"] = new[] { "MSEXE", "PE" }.ToFrozenSet(StringComparer.OrdinalIgnoreCase),
+        ["MACHO_UNIBIN"] = new[] { "MACHO_UNIBIN", "MACH-O" }.ToFrozenSet(StringComparer.OrdinalIgnoreCase),
+        ["ZIPSFX"] = new[] { "ZIPSFX", "ZIP" }.ToFrozenSet(StringComparer.OrdinalIgnoreCase),
+        ["RARSFX"] = new[] { "RARSFX", "RAR" }.ToFrozenSet(StringComparer.OrdinalIgnoreCase),
+        ["ARJSFX"] = new[] { "ARJSFX", "ARJ" }.ToFrozenSet(StringComparer.OrdinalIgnoreCase),
+        ["CABSFX"] = new[] { "CABSFX", "CAB" }.ToFrozenSet(StringComparer.OrdinalIgnoreCase),
+        ["7ZSFX"] = new[] { "7ZSFX", "7Z" }.ToFrozenSet(StringComparer.OrdinalIgnoreCase),
+        ["EGGSFX"] = new[] { "EGGSFX", "EGG" }.ToFrozenSet(StringComparer.OrdinalIgnoreCase),
+        ["SWF"] = new[] { "SWF", "FLASH" }.ToFrozenSet(StringComparer.OrdinalIgnoreCase),
+        ["MHTML"] = new[] { "MHTML" }.ToFrozenSet(StringComparer.OrdinalIgnoreCase)
+    };
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    public static bool TargetMatchesFileType(SignatureTargetType target, LdbScanContext ctx) => TargetMatchesFileType((int)target, ctx.FileType);
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    public static bool TargetMatchesFileType(SignatureTargetType target, string fileType) => TargetMatchesFileType((int)target, fileType);
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    public static bool TargetMatchesFileType(int target, LdbScanContext ctx) => TargetMatchesFileType(target, ctx.FileType);
+
+    /// <summary>
+    /// O(1) bitmask test: target index (0..14) tested against precomputed mask for fileType.
+    /// Target 0 (Any) always returns true. Target 8 (Unused8) always returns false.
+    /// </summary>
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    public static bool TargetMatchesFileType(int target, string fileType)
+    {
+        if (target == 0) return true;
+        if ((uint)target > 14 || target == 8) return false;
+        return FileTypeToTargetMask.TryGetValue(fileType, out var mask) && (mask & (1u << target)) != 0;
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     private static bool FileTypeMatches(string expected, string actual)
     {
         if (expected.Equals("ANY", StringComparison.OrdinalIgnoreCase)) return true;
@@ -117,30 +167,10 @@ internal static class LdbRuntime
             actual.StartsWith("OOXML_", StringComparison.OrdinalIgnoreCase)) return true;
         if (expected.Equals("OLE2", StringComparison.OrdinalIgnoreCase) &&
             actual.StartsWith("HWP", StringComparison.OrdinalIgnoreCase)) return true;
-        if (expected.Equals("TAR", StringComparison.OrdinalIgnoreCase) &&
-            actual is "POSIX_TAR" or "OLD_TAR") return true;
-        if (expected.Equals("MSSZDD", StringComparison.OrdinalIgnoreCase) &&
-            actual.Equals("SZDD", StringComparison.OrdinalIgnoreCase)) return true;
-        if (expected.Equals("MSCAB", StringComparison.OrdinalIgnoreCase) &&
-            actual.Equals("CAB", StringComparison.OrdinalIgnoreCase)) return true;
-        if (expected.Equals("MSCHM", StringComparison.OrdinalIgnoreCase) &&
-            actual.Equals("CHM", StringComparison.OrdinalIgnoreCase)) return true;
-        if (expected.Equals("MSOLE2", StringComparison.OrdinalIgnoreCase) &&
-            actual.Equals("OLE2", StringComparison.OrdinalIgnoreCase)) return true;
-        if (expected.Equals("ISO9660", StringComparison.OrdinalIgnoreCase) &&
-            actual.Equals("ISO", StringComparison.OrdinalIgnoreCase)) return true;
-        if (expected.Equals("MSEXE", StringComparison.OrdinalIgnoreCase) &&
-            actual.Equals("PE", StringComparison.OrdinalIgnoreCase)) return true;
-        if (expected.Equals("MACHO_UNIBIN", StringComparison.OrdinalIgnoreCase) &&
-            actual.Equals("MACH-O", StringComparison.OrdinalIgnoreCase)) return true;
-        if (expected.Equals("ZIPSFX", StringComparison.OrdinalIgnoreCase) && actual.Equals("ZIP", StringComparison.OrdinalIgnoreCase)) return true;
-        if (expected.Equals("RARSFX", StringComparison.OrdinalIgnoreCase) && actual.Equals("RAR", StringComparison.OrdinalIgnoreCase)) return true;
-        if (expected.Equals("ARJSFX", StringComparison.OrdinalIgnoreCase) && actual.Equals("ARJ", StringComparison.OrdinalIgnoreCase)) return true;
-        if (expected.Equals("CABSFX", StringComparison.OrdinalIgnoreCase) && actual.Equals("CAB", StringComparison.OrdinalIgnoreCase)) return true;
-        if (expected.Equals("7ZSFX", StringComparison.OrdinalIgnoreCase) && actual.Equals("7Z", StringComparison.OrdinalIgnoreCase)) return true;
-        if (expected.Equals("EGGSFX", StringComparison.OrdinalIgnoreCase) && actual.Equals("EGG", StringComparison.OrdinalIgnoreCase)) return true;
-        if (expected.Equals("SWF", StringComparison.OrdinalIgnoreCase) && actual.Equals("FLASH", StringComparison.OrdinalIgnoreCase)) return true;
-        if (expected.Equals("MHTML", StringComparison.OrdinalIgnoreCase) && actual.Equals("MHTML", StringComparison.OrdinalIgnoreCase)) return true;
+
+        if (ContainerAliasMap.TryGetValue(expected, out var set))
+            return set.Contains(actual);
+
         return false;
     }
 

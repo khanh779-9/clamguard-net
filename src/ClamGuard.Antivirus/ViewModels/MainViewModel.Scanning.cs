@@ -223,4 +223,166 @@ public sealed partial class MainViewModel
         }
     }
 
+    /// <summary>
+    /// Scans a list of paths (files and/or folders) inside one tracked task.
+    /// Each path contributes to the shared progress so several modes can run
+    /// concurrently side by side.
+    /// </summary>
+    public async Task<IReadOnlyList<ScanResult>> ScanPathsAsync(IReadOnlyList<string> paths, string kind, CancellationToken token = default)
+    {
+        var task = _tracker.Start("ScanPaths", kind, paths.Count > 0 ? paths[0] : string.Empty, isCancellable: true, token);
+        task.TotalToScan = paths.Count;
+        var collected = new List<ScanResult>();
+        try
+        {
+            for (var index = 0; index < paths.Count; index++)
+            {
+                token.ThrowIfCancellationRequested();
+                var target = paths[index];
+                task.CurrentFile = target;
+                task.ProgressText = $"[{index + 1}/{paths.Count}] {target}";
+
+                IReadOnlyList<ScanResult> results;
+                if (Directory.Exists(target))
+                {
+                    var pathIndex = index;
+                    var inner = new Progress<ScanProgress>(p =>
+                    {
+                        if (p.Result is { } r)
+                        {
+                            collected.Add(r);
+                            if (r.Verdict is ScanVerdict.Malicious or ScanVerdict.PotentiallyUnwanted or ScanVerdict.StrongIndicator)
+                            {
+                                task.ThreatsFound++;
+                                AddHistory(r, kind);
+                            }
+                        }
+
+                        var fraction = p.Total > 0 ? (double)p.Completed / p.Total : 0;
+                        task.ScannedCount = p.Completed;
+                        task.Percent = Math.Min(100.0, (pathIndex + fraction) * 100.0 / paths.Count);
+                        task.CurrentFile = p.Path;
+                    });
+                    results = await Task.Run(() => _engine.ScanFolderAsync(target, inner, token), token).ConfigureAwait(true);
+                }
+                else if (File.Exists(target))
+                {
+                    var result = await Task.Run(() => _engine.ScanFileAsync(target, token), token).ConfigureAwait(true);
+                    results = [result];
+                }
+                else
+                {
+                    continue;
+                }
+
+                foreach (var r in results)
+                {
+                    if (r.Verdict is ScanVerdict.Malicious or ScanVerdict.PotentiallyUnwanted or ScanVerdict.StrongIndicator)
+                        AddHistory(r, kind);
+                }
+
+                collected.AddRange(results);
+                task.ScannedCount = index + 1;
+                task.Percent = (index + 1) * 100.0 / paths.Count;
+            }
+
+            return collected;
+        }
+        catch (OperationCanceledException)
+        {
+            PopulateScanResults(collected, LocalizationService.Instance.Get("scan.cancelled"));
+            throw;
+        }
+        finally
+        {
+            task.ProgressText = LocalizationService.Instance.Get("scan.ready");
+            SnapshotCompletedScan(task);
+            _tracker.Complete(task);
+        }
+    }
+
+    /// <summary>Scans the memory of running processes in one tracked task.</summary>
+    public async Task<IReadOnlyList<ScanResult>> MemoryScanAsync(CancellationToken token = default)
+    {
+        var task = _tracker.Start("MemoryScan", LocalizationService.Instance.Get("scan.memory"), string.Empty, isCancellable: true, token);
+        var collected = new List<ScanResult>();
+        try
+        {
+            var summary = await Task.Run(() => _memoryScan.ScanAsync(
+                text => task.ProgressText = text,
+                result =>
+                {
+                    collected.Add(result);
+                    task.ThreatsFound++;
+                    AddHistory(result, "Memory Scan");
+                },
+                task.Token), task.Token).ConfigureAwait(true);
+
+            task.Percent = 100;
+            task.ProgressText = $"{LocalizationService.Instance.Get("scan.memory")}: {summary.ScannedProcesses}/{summary.DiscoveredProcesses} · {summary.ScannedRegions} · {summary.ScannedBytes / 1024.0 / 1024.0:N0} MB";
+            return collected;
+        }
+        catch (OperationCanceledException)
+        {
+            PopulateScanResults(collected, LocalizationService.Instance.Get("scan.cancelled"));
+            throw;
+        }
+        finally
+        {
+            SnapshotCompletedScan(task);
+            _tracker.Complete(task);
+        }
+    }
+
+    /// <summary>Smart Scan targets: system, program and user data locations.</summary>
+    public IReadOnlyList<string> GetSmartScanTargets()
+    {
+        var candidates = new[]
+        {
+            Environment.GetFolderPath(Environment.SpecialFolder.Windows),
+            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),
+            Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData)
+        };
+        return candidates
+            .Where(p => !string.IsNullOrWhiteSpace(p) && Directory.Exists(p))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    /// <summary>Critical Scan targets: the locations malware persists and executes from.</summary>
+    public IReadOnlyList<string> GetCriticalScanTargets()
+    {
+        var windows = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
+        var candidates = new[]
+        {
+            Path.Combine(windows, "System32"),
+            Path.Combine(windows, "SysWOW64"),
+            Path.Combine(windows, "System32", "drivers"),
+            Path.Combine(windows, "Temp"),
+            Environment.GetFolderPath(Environment.SpecialFolder.Startup),
+            Environment.GetFolderPath(Environment.SpecialFolder.CommonStartup),
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData) is { Length: > 0 } local ? Path.Combine(local, "Temp") : string.Empty
+        };
+        return candidates
+            .Where(p => !string.IsNullOrWhiteSpace(p) && Directory.Exists(p))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    /// <summary>Startup Scan targets: executables referenced by autostart locations.</summary>
+    public IReadOnlyList<string> GetStartupScanTargets()
+        => _startupScan.ResolveScanTargets(_startupScan.Collect());
+
+    public Task<IReadOnlyList<ScanResult>> SmartScanAsync(CancellationToken token = default)
+        => ScanPathsAsync(GetSmartScanTargets(), LocalizationService.Instance.Get("scan.smart"), token);
+
+    public Task<IReadOnlyList<ScanResult>> CriticalScanAsync(CancellationToken token = default)
+        => ScanPathsAsync(GetCriticalScanTargets(), LocalizationService.Instance.Get("scan.critical"), token);
+
+    public Task<IReadOnlyList<ScanResult>> StartupScanAsync(CancellationToken token = default)
+        => ScanPathsAsync(GetStartupScanTargets(), LocalizationService.Instance.Get("scan.startup"), token);
+
 }

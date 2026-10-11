@@ -1,3 +1,5 @@
+using ClamGuard.Core;
+
 namespace ClamGuard.Signatures.Parsing;
 
 internal static class LdbTargetParser
@@ -105,7 +107,7 @@ internal static class LdbTargetParser
         }
 
         return new LdbTargetDescription(
-            targetValue, minFileSize, maxFileSize, minEp, maxEp, minSections, maxSections,
+            (SignatureTargetType)targetValue, minFileSize, maxFileSize, minEp, maxEp, minSections, maxSections,
             container, intermediates, handlerType, iconGroup1, iconGroup2, minEngine, maxEngine, targetSpecified);
     }
 

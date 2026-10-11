@@ -73,7 +73,7 @@ internal static partial class Program
             "the in-memory NDB matcher respects its caller's target-applicability filter");
 
         var nonStreamableNdb = new NdbSignature(
-            "Demo.PeOffset", "demo.ndb", 1, "EP+0", HexPatternParser.Parse("50454f4646534554"));
+            "Demo.PeOffset", "demo.ndb", SignatureTargetType.Pe, "EP+0", HexPatternParser.Parse("50454f4646534554"));
         var candidateSet = new ClamGuard.Signatures.Matching.CompiledSignatureSet();
         candidateSet.Add(nonStreamableNdb);
         candidateSet.Add(new ContentSignature(
@@ -87,7 +87,8 @@ internal static partial class Program
             collectAllMatches: true,
             ndbFilter: static _ => false,
             ndbPatternCandidates: fixedNdbCandidates,
-            ndbCandidateFilter: static _ => true);
+            ndbCandidateFilter: static _ => true,
+            targetGroup: (int)SignatureTargetType.Pe);
         Assert(fixedNdbCandidates.Contains(nonStreamableNdb),
             "fixed NDB patterns with special offsets are collected as candidates without bypassing offset validation");
 
@@ -324,7 +325,7 @@ internal static partial class Program
         File.WriteAllText(ldbContextPath,
             "Context.Engine;Engine:51-255,Target:1,FileSize:1-999999,EntryPoint:0-999999,NumberOfSections:1-32,Container:ZIP,Intermediates:ZIP>7Z,HandlerType:PE,IconGroup1:GROUP-A,IconGroup2:*;0;4d5a\n");
         var contextSig = SignatureParser.ParseLdbFile(ldbContextPath).Single();
-        Assert(contextSig.Target is { Target: 1, Container: "ZIP", HandlerType: "PE" }, "LDB contextual target fields parse");
+        Assert(contextSig.Target is { Target: SignatureTargetType.Pe, Container: "ZIP", HandlerType: "PE" }, "LDB contextual target fields parse");
         Assert(contextSig.Target!.Intermediates is { Count: 2 }, "LDB intermediates parse");
 
         File.Delete(ldbModifierPath);

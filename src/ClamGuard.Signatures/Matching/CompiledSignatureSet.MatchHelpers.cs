@@ -244,11 +244,15 @@ public sealed partial class CompiledSignatureSet
         if (string.IsNullOrWhiteSpace(expression) || expression == "*") return true;
         if (expression.Equals("EOF", StringComparison.OrdinalIgnoreCase)) return offset == length;
         if (expression.StartsWith("EOF-", StringComparison.OrdinalIgnoreCase) &&
-            long.TryParse(expression[4..], out var eofShift))
+            long.TryParse(expression.AsSpan(4), out var eofShift))
             return offset == length - eofShift;
         if (long.TryParse(expression, out var exact)) return offset == exact;
-        var parts = expression.Split(',', 2, StringSplitOptions.TrimEntries);
-        if (parts.Length == 2 && long.TryParse(parts[0], out var minimum) && long.TryParse(parts[1], out var maximum))
+        // Avoid string.Split() allocation — this method is called per-match in the
+        // inner scan loop and the previous Split(",") allocated a string[] each time.
+        var comma = expression.IndexOf(',');
+        if (comma > 0 && comma < expression.Length - 1 &&
+            long.TryParse(expression.AsSpan(0, comma).Trim(), out var minimum) &&
+            long.TryParse(expression.AsSpan(comma + 1).Trim(), out var maximum))
             return offset >= minimum && offset <= maximum;
         return false;
     }
@@ -257,14 +261,17 @@ public sealed partial class CompiledSignatureSet
     {
         if (string.IsNullOrWhiteSpace(expression) || expression == "*") return true;
         if (long.TryParse(expression, out var exact)) return offset == exact;
-        var parts = expression.Split(',', 2, StringSplitOptions.TrimEntries);
-        if (parts.Length == 2 && long.TryParse(parts[0], out var minimum) && long.TryParse(parts[1], out var maximum))
+        // Allocation-free range check — avoid string.Split() in the streaming hot path.
+        var comma = expression.IndexOf(',');
+        if (comma > 0 && comma < expression.Length - 1 &&
+            long.TryParse(expression.AsSpan(0, comma).Trim(), out var minimum) &&
+            long.TryParse(expression.AsSpan(comma + 1).Trim(), out var maximum))
             return offset >= minimum && offset <= maximum;
         if (!expectedLength.HasValue) return false;
         if (expression.Equals("EOF", StringComparison.OrdinalIgnoreCase))
             return endOffset == expectedLength.Value - 1;
         if (expression.StartsWith("EOF-", StringComparison.OrdinalIgnoreCase) &&
-            long.TryParse(expression[4..], out var eofShift))
+            long.TryParse(expression.AsSpan(4), out var eofShift))
             return offset == expectedLength.Value - eofShift;
         return false;
     }

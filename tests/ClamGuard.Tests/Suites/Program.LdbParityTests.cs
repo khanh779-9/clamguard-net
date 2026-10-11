@@ -37,7 +37,7 @@ internal static partial class Program
             var parsedSignature = state.Database.Signatures.OfType<LogicalSignature>().Single();
 
             Assert(parsedSignature.Name == "Win.Malware.Generic-9828792-0", "the reference LDB signature name is preserved");
-            Assert(parsedSignature.Target is { Target: 1, MinimumFunctionalityLevel: 81, MaximumFunctionalityLevel: 255 },
+            Assert(parsedSignature.Target is { Target: SignatureTargetType.Pe, MinimumFunctionalityLevel: 81, MaximumFunctionalityLevel: 255 },
                 "the reference LDB Engine and PE target filter parse correctly");
             Assert(parsedSignature.Expression == "0&1&2&3&4" && parsedSignature.SubSignatures.Count == 5,
                 "all five required reference LDB subsignatures are retained");

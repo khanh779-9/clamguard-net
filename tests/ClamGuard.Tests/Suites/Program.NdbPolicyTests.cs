@@ -12,7 +12,7 @@ internal static partial class Program
             "Ndb.Eof:0:EOF-2:4142\n" +
             "Ndb.Future:0:0:4142:240\n");
         var ndbParsed = SignatureParser.ParseNdbFile(ndbPath).ToArray();
-        Assert(ndbParsed.Length == 5 && ndbParsed.All(x => x.Target is 0 or 1), "NDB parser accepts target, range, EOF and FLEVEL fields");
+        Assert(ndbParsed.Length == 5 && ndbParsed.All(x => x.Target is SignatureTargetType.Any or SignatureTargetType.Pe), "NDB parser accepts target, range, EOF and FLEVEL fields");
         Assert(!SignatureParser.ParseNdbFile(ndbPath, 234).Any(x => x.Name == "Ndb.Future"), "NDB minimum FLEVEL filters signatures above the engine level");
         var invalidNdbOffsetPath = Path.Combine(Path.GetTempPath(), "clamguard-invalid-offset.ndb");
         File.WriteAllText(invalidNdbOffsetPath, "Ndb.BadOffset:0:BOGUS:4142\n");
@@ -52,7 +52,7 @@ internal static partial class Program
             "Ldb.Internal;Engine:81-255,Target:13;0;4142\n" +
             "Ldb.Other;Engine:81-255,Target:14;0;4142\n");
         var extendedTargets = SignatureParser.ParseLdbFile(extendedTargetPath).ToArray();
-        Assert(extendedTargets.Length == 2 && extendedTargets.All(x => x.Target?.Target is 13 or 14),
+        Assert(extendedTargets.Length == 2 && extendedTargets.All(x => x.Target?.Target is SignatureTargetType.Internal or SignatureTargetType.Other),
             "LDB parser accepts ClamAV 1.5.4 targets 13 (INTERNAL) and 14 (OTHER)");
 
         var extendedNdbTargetPath = Path.Combine(Path.GetTempPath(), "clamguard-extended-targets.ndb");
@@ -60,12 +60,12 @@ internal static partial class Program
             "Ndb.Internal:13:0:4142\n" +
             "Ndb.Other:14:0:4142\n");
         var extendedNdbTargets = SignatureParser.ParseNdbFile(extendedNdbTargetPath).ToArray();
-        Assert(extendedNdbTargets.Length == 2 && extendedNdbTargets.All(x => x.Target is 13 or 14),
+        Assert(extendedNdbTargets.Length == 2 && extendedNdbTargets.All(x => x.Target is SignatureTargetType.Internal or SignatureTargetType.Other),
             "NDB parser accepts ClamAV 1.5.4 targets 13 (INTERNAL) and 14 (OTHER)");
         var wildcardTargetNdbPath = Path.Combine(Path.GetTempPath(), "clamguard-target-wildcard.ndb");
         File.WriteAllText(wildcardTargetNdbPath, "Ndb.TargetWildcard:*:0:4142\n");
         var wildcardTarget = SignatureParser.ParseNdbFile(wildcardTargetNdbPath).Single();
-        Assert(wildcardTarget.Target == 0, "NDB Target:* maps to target 0 like ClamAV atoi(\"*\")");
+        Assert(wildcardTarget.Target == SignatureTargetType.Any, "NDB Target:* maps to target 0 like ClamAV atoi(\"*\")");
 
         var ndbIndentedCommentPath = Path.Combine(Path.GetTempPath(), "clamguard-indented-comment.ndb");
         File.WriteAllText(ndbIndentedCommentPath, " #not-a-comment\n");

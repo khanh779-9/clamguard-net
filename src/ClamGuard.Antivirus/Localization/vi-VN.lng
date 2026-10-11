@@ -70,7 +70,18 @@ loading_db=Đang tải cơ sở dữ liệu chữ ký chạy nền...
 
 [scan]
 scan_files=QUÉT TỆP
-scan_files_desc=Chọn một tệp hoặc thư mục, sau đó bắt đầu quét theo yêu cầu.
+scan_files_desc=Chọn tệp/thư mục hoặc khởi động một trong các chế độ quét song song.
+modes=CHẾ ĐỘ QUÉT
+smart=Quét thông minh
+smart_desc=Windows, Program Files, ProgramData và AppData
+critical=Quét quan trọng
+critical_desc=System32, driver, thư mục tạm và vị trí khởi động
+memory=Quét bộ nhớ
+memory_desc=Bộ nhớ các tiến trình đang chạy (raw + hash)
+startup=Quét khởi động
+startup_desc=Run keys, thư mục Startup và dịch vụ tự động
+active_tasks=TÁC VỤ ĐANG CHẠY
+start=Bắt đầu
 file_scan=Quét tệp
 file_scan_desc=Kiểm tra một tệp bằng toàn bộ nguồn chữ ký hiện có.
 folder_scan=Quét thư mục

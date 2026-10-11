@@ -1,3 +1,4 @@
+using ClamGuard.Core;
 using ClamGuard.Signatures;
 using ClamGuard.Signatures.Patterns;
 
@@ -62,7 +63,7 @@ internal static class NdbSignatureParser
             yield return new NdbSignature(
                 parts[0],
                 path,
-                target,
+                (SignatureTargetType)target,
                 offsetExpression,
                 HexPatternParser.Parse(parts[3]),
                 minimum,

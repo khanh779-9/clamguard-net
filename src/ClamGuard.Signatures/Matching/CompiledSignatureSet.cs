@@ -1,4 +1,4 @@
-using System.Security.Cryptography;
+﻿using System.Security.Cryptography;
 using ClamGuard.Core;
 using ClamGuard.Signatures;
 using ClamGuard.Signatures.Patterns;
@@ -40,13 +40,17 @@ public sealed partial class CompiledSignatureSet
     private readonly HashSet<HashAlgorithmKind> _falsePositiveAlgorithms = [];
     // IDs are assigned in insertion order and never removed; lists are smaller
     // than integer-key dictionaries and keep the NDB metadata aligned by ID.
-    private readonly List<ContentSignature> _acEntries = [];
-    private readonly List<NdbSignature?> _ndbAcEntries = [];
+    // Signatures are partitioned per target group (ClamAV cli_mtargets), so a
+    // scan evaluates only the detected type's automaton plus the GENERIC one.
+    private const int TargetGroupCount = SignatureTargetGroups.Count;
+    private readonly List<ContentSignature>[] _acEntries = CreateGroupLists();
+    private readonly List<NdbSignature?>[] _ndbAcEntries = CreateGroupNullNdbLists();
     private readonly List<ContentSignature> _contentAcEntries = [];
-    private AhoCorasickMatcher _ac = new();
+    private AhoCorasickMatcher?[] _targetAcs = new AhoCorasickMatcher?[TargetGroupCount];
     private AhoCorasickMatcher _contentAc = new();
     private BoyerMooreHorspoolMatcher? _singleFixedMatcher;
     private ContentSignature? _singleFixedEntry;
+    private int _singleFixedGroup = -1;
 
     // Flexible (wildcard) signatures: one shared automaton over each pattern's
     // longest fixed-byte run surfaces all candidate positions in a single scan,
@@ -79,16 +83,16 @@ public sealed partial class CompiledSignatureSet
     {
         get
         {
-            var lengths = _content.Concat<Signature>(_ndb)
-                .Select(static s => s is ContentSignature c ? c.Pattern.MaxLength : ((NdbSignature)s).Pattern.MaxLength)
+            var lengths = _acEntries.SelectMany(static g => g)
+                .Select(static s => s.Pattern.MaxLength)
                 .Where(static x => x != int.MaxValue)
                 .DefaultIfEmpty(1);
             return Math.Max(1, lengths.Max());
         }
     }
 
-    public bool HasUnboundedPattern => _content.Any(static x => x.Pattern.MaxLength == int.MaxValue) ||
-                                       _ndb.Any(static x => x.Pattern.MaxLength == int.MaxValue);
+    public bool HasUnboundedPattern => _acEntries.SelectMany(static g => g)
+        .Any(static s => s.Pattern.MaxLength == int.MaxValue);
 
     public void Add(Signature signature)
     {
@@ -159,11 +163,21 @@ public sealed partial class CompiledSignatureSet
     private void AddFixedPattern(ContentSignature entry, NdbSignature? ndb = null)
     {
         ArgumentNullException.ThrowIfNull(entry);
-        _acEntries.Add(entry);
-        _ndbAcEntries.Add(ndb);
+        // ClamAV routes the signature into engine->root[tdb->target[0]].
+        var group = ndb is not null
+            ? SignatureTargetGroups.FromSignatureTarget((int)ndb.Target)
+            : SignatureTargetGroups.Generic;
+        _acEntries[group].Add(entry);
+        _ndbAcEntries[group].Add(ndb);
         if (entry.Type != SignatureType.Ndb)
             _contentAcEntries.Add(entry);
     }
+
+    private static List<ContentSignature>[] CreateGroupLists()
+        => Enumerable.Range(0, SignatureTargetGroups.Count).Select(_ => new List<ContentSignature>()).ToArray();
+
+    private static List<NdbSignature?>[] CreateGroupNullNdbLists()
+        => Enumerable.Range(0, SignatureTargetGroups.Count).Select(_ => new List<NdbSignature?>()).ToArray();
 
     public void Build()
     {
@@ -171,20 +185,31 @@ public sealed partial class CompiledSignatureSet
 
         // Rebuild the trie from the canonical signature index. This makes Add()
         // safe even when signatures arrive in multiple database-loading passes.
-        _ac = new AhoCorasickMatcher();
-        for (var id = 0; id < _acEntries.Count; id++)
-            _ac.Add(_acEntries[id].Pattern.FixedBytesSpan, id);
-        _ac.Build();
+        // ClamAV builds one automaton per target group (engine->root[15]); a
+        // scan evaluates the detected type's root first, then GENERIC.
+        _targetAcs = new AhoCorasickMatcher?[TargetGroupCount];
+        for (var group = 0; group < TargetGroupCount; group++)
+        {
+            var entries = _acEntries[group];
+            if (entries.Count == 0)
+                continue;
+
+            var automaton = new AhoCorasickMatcher();
+            for (var id = 0; id < entries.Count; id++)
+                automaton.Add(entries[id].Pattern.FixedBytesSpan, id);
+            automaton.Build();
+            _targetAcs[group] = automaton;
+        }
 
         // Raw Content signatures need a separate, much smaller automaton when a
         // caller deliberately excludes NDB rules. Scanning the combined NDB trie
         // and discarding every NDB hit afterward wastes time and can produce a
         // very large temporary hit list on multi-megabyte files.
-        if (_contentAcEntries.Count == _acEntries.Count)
+        if (_contentAcEntries.Count == _acEntries.Sum(static g => g.Count))
         {
             // If no NDB entries were added, the shared automaton already has the
             // same ID order. Reuse it instead of duplicating the index in memory.
-            _contentAc = _ac;
+            _contentAc = _targetAcs[SignatureTargetGroups.Generic] ?? new AhoCorasickMatcher();
         }
         else
         {
@@ -245,14 +270,28 @@ public sealed partial class CompiledSignatureSet
         // Match a single long exact signature with the BM backend rather than
         // paying the AC state-machine cost. With multiple signatures, AC remains
         // the multi-pattern engine and keeps its cross-pattern sharing.
-        if (_acEntries.Count == 1)
+        var totalAcEntries = 0;
+        var singleGroup = -1;
+        for (var group = 0; group < TargetGroupCount; group++)
         {
-            _singleFixedEntry = _acEntries[0];
+            if (_acEntries[group].Count == 0)
+                continue;
+            totalAcEntries += _acEntries[group].Count;
+            singleGroup = totalAcEntries == 1 ? group : -1;
+        }
+
+        if (totalAcEntries == 1 && singleGroup >= 0)
+        {
+            _singleFixedGroup = singleGroup;
+            _singleFixedEntry = _acEntries[singleGroup][0];
             if (_singleFixedEntry.Pattern.ToFixedBytes() is { Length: >= 8 } bytes)
                 _singleFixedMatcher = new BoyerMooreHorspoolMatcher(bytes);
+            else
+                _singleFixedMatcher = null;
         }
         else
         {
+            _singleFixedGroup = -1;
             _singleFixedEntry = null;
             _singleFixedMatcher = null;
         }
@@ -286,22 +325,56 @@ public sealed partial class CompiledSignatureSet
         bool collectAllMatches = true,
         Func<NdbSignature, bool>? ndbFilter = null,
         ISet<NdbSignature>? ndbPatternCandidates = null,
-        Func<NdbSignature, bool>? ndbCandidateFilter = null)
+        Func<NdbSignature, bool>? ndbCandidateFilter = null,
+        int targetGroup = SignatureTargetGroups.Generic)
     {
         Build();
         var hits = new Dictionary<string, Detection>(StringComparer.OrdinalIgnoreCase);
-        if (_singleFixedMatcher is not null && _singleFixedEntry is not null &&
-            ndbFilter is null && ndbPatternCandidates is null && ndbCandidateFilter is null)
+        if (includeNdb)
         {
-            var singleNdb = _ndbAcEntries.Count == 1 ? _ndbAcEntries[0] : null;
-            MatchSingleFixed(
-                _singleFixedMatcher, _singleFixedEntry, singleNdb, data, hits,
-                includeNdb, ndbFilter, ndbPatternCandidates, ndbCandidateFilter);
+            // ClamAV cli_scan_buff: the target-specific automaton is matched
+            // before the generic one. The generic pass is skipped when the
+            // requested group already is the generic root.
+            if (targetGroup != SignatureTargetGroups.Generic &&
+                _targetAcs[targetGroup] is { } targetAc)
+            {
+                if (_singleFixedMatcher is not null && _singleFixedEntry is not null &&
+                    _singleFixedGroup == targetGroup &&
+                    ndbFilter is null && ndbPatternCandidates is null && ndbCandidateFilter is null)
+                {
+                    MatchSingleFixed(
+                        _singleFixedMatcher, _singleFixedEntry, _ndbAcEntries[targetGroup][0], data, hits,
+                        includeNdb, ndbFilter, ndbPatternCandidates, ndbCandidateFilter);
+                }
+                else
+                {
+                    MatchAho(
+                        targetAc, _acEntries[targetGroup], _ndbAcEntries[targetGroup], data, hits, 0, data.Length,
+                        collectAllMatches, true, ndbFilter, ndbPatternCandidates, ndbCandidateFilter);
+                }
+
+                if (!collectAllMatches && hits.Count != 0)
+                    return hits.Values.Take(1).ToArray();
+            }
+
+            if (_targetAcs[SignatureTargetGroups.Generic] is { } genericAc)
+            {
+                if (_singleFixedMatcher is not null && _singleFixedEntry is not null &&
+                    _singleFixedGroup == SignatureTargetGroups.Generic &&
+                    ndbFilter is null && ndbPatternCandidates is null && ndbCandidateFilter is null)
+                {
+                    MatchSingleFixed(
+                        _singleFixedMatcher, _singleFixedEntry, _ndbAcEntries[SignatureTargetGroups.Generic][0], data, hits,
+                        includeNdb, ndbFilter, ndbPatternCandidates, ndbCandidateFilter);
+                }
+                else
+                {
+                    MatchAho(
+                        genericAc, _acEntries[SignatureTargetGroups.Generic], _ndbAcEntries[SignatureTargetGroups.Generic], data, hits, 0, data.Length,
+                        collectAllMatches, true, ndbFilter, ndbPatternCandidates, ndbCandidateFilter);
+                }
+            }
         }
-        else if (includeNdb)
-            MatchAho(
-                _ac, _acEntries, _ndbAcEntries, data, hits, 0, data.Length,
-                collectAllMatches, true, ndbFilter, ndbPatternCandidates, ndbCandidateFilter);
         else if (_contentAcEntries.Count != 0)
             MatchAho(
                 _contentAc, _contentAcEntries, null, data, hits, 0, data.Length,
@@ -416,7 +489,8 @@ public sealed partial class CompiledSignatureSet
         CancellationToken cancellationToken = default,
         bool includeNdb = true,
         bool collectAllMatches = true,
-        Func<NdbSignature, bool>? ndbFilter = null)
+        Func<NdbSignature, bool>? ndbFilter = null,
+        int targetGroup = SignatureTargetGroups.Generic)
     {
         ArgumentNullException.ThrowIfNull(input);
         if (!input.CanRead) throw new ArgumentException("Stream must be readable.", nameof(input));
@@ -427,8 +501,13 @@ public sealed partial class CompiledSignatureSet
         var hits = new Dictionary<string, Detection>(StringComparer.OrdinalIgnoreCase);
         var buffer = new byte[chunkSize];
         var scratch = Array.Empty<byte>();
-        var acState = 0;
-        var ignoredPatternIds = new HashSet<int>();
+        var targetGroupState = 0;
+        var genericGroupState = 0;
+        var contentAcState = 0;
+        // Per-root ignored pattern sets: pattern ids are namespaced per automaton.
+        var targetIgnoredPatternIds = new HashSet<int>();
+        var genericIgnoredPatternIds = new HashSet<int>();
+        var contentIgnoredPatternIds = new HashSet<int>();
         long absoluteOffset = 0;
         long totalBytes = 0;
         var expectedLength = input.CanSeek ? input.Length : (long?)null;
@@ -446,6 +525,46 @@ public sealed partial class CompiledSignatureSet
         var sawSha256 = NeedsHash(HashAlgorithmKind.Sha256, expectedLength);
         var mustFinishForFalsePositiveCheck = HasApplicableFalsePositiveRules(expectedLength);
 
+        void ScanChunkWithRoot(
+            AhoCorasickMatcher matcher,
+            List<ContentSignature> entries,
+            List<NdbSignature?>? ndbEntries,
+            HashSet<int> ignoredPatternIds,
+            int chunkLength,
+            ref int state)
+        {
+            matcher.ScanUntil(buffer.AsSpan(0, chunkLength), ref state, absoluteOffset, (id, endOffset) =>
+            {
+                var item = entries[id];
+                if (hits.ContainsKey(item.Name))
+                {
+                    ignoredPatternIds.Add(id);
+                    return false;
+                }
+                if (item.Type == SignatureType.Ndb)
+                {
+                    var ndb = ndbEntries is not null ? ndbEntries[id] : null;
+                    if (ndb is null || (ndbFilter is not null && !ndbFilter(ndb)))
+                    {
+                        // Target-inapplicable fixed patterns can never be useful
+                        // on this scan's byte layer. Ignore their later outputs.
+                        ignoredPatternIds.Add(id);
+                        return false;
+                    }
+                }
+                var start = endOffset - item.Pattern.MinLength + 1;
+                // The AC automaton has already compared every byte of a fixed signature, including
+                // bytes that crossed a chunk boundary. Only the offset constraint remains to check.
+                if (start < 0 || !OffsetAllowsStreaming(item.OffsetExpression, start, endOffset, expectedLength))
+                    return false;
+
+                hits.TryAdd(item.Name,
+                    new Detection(item.Name, item.Type, start, item.SourceFile, "Content pattern matched while streaming."));
+                ignoredPatternIds.Add(id);
+                return !collectAllMatches && !mustFinishForFalsePositiveCheck;
+            }, ignoredPatternIds);
+        }
+
         while (true)
         {
             var read = await input.ReadAsync(buffer.AsMemory(), cancellationToken);
@@ -462,39 +581,19 @@ public sealed partial class CompiledSignatureSet
                 // ordinary Content signatures. Large databases can have many NDB
                 // outputs for common byte sequences, even though the caller discards
                 // every one of them.
-                var matcher = includeNdb ? _ac : _contentAc;
-                var entries = includeNdb ? _acEntries : _contentAcEntries;
-                var ndbEntries = includeNdb ? _ndbAcEntries : null;
-                matcher.ScanUntil(buffer.AsSpan(0, read), ref acState, absoluteOffset, (id, endOffset) =>
+                // ClamAV cli_scan_buff ordering: target-specific root first, then
+                // the generic root.
+                if (includeNdb)
                 {
-                    var item = entries[id];
-                    if (hits.ContainsKey(item.Name))
-                    {
-                        ignoredPatternIds.Add(id);
-                        return false;
-                    }
-                    if (item.Type == SignatureType.Ndb)
-                    {
-                        var ndb = ndbEntries is not null ? ndbEntries[id] : null;
-                        if (ndb is null || (ndbFilter is not null && !ndbFilter(ndb)))
-                        {
-                            // Target-inapplicable fixed patterns can never be useful
-                            // on this scan's byte layer. Ignore their later outputs.
-                            ignoredPatternIds.Add(id);
-                            return false;
-                        }
-                    }
-                    var start = endOffset - item.Pattern.MinLength + 1;
-                    // The AC automaton has already compared every byte of a fixed signature, including
-                    // bytes that crossed a chunk boundary. Only the offset constraint remains to check.
-                    if (start < 0 || !OffsetAllowsStreaming(item.OffsetExpression, start, endOffset, expectedLength))
-                        return false;
-
-                    hits.TryAdd(item.Name,
-                        new Detection(item.Name, item.Type, start, item.SourceFile, "Content pattern matched while streaming."));
-                    ignoredPatternIds.Add(id);
-                    return !collectAllMatches && !mustFinishForFalsePositiveCheck;
-                }, ignoredPatternIds);
+                    if (targetGroup != SignatureTargetGroups.Generic && _targetAcs[targetGroup] is { } targetAc)
+                        ScanChunkWithRoot(targetAc, _acEntries[targetGroup], _ndbAcEntries[targetGroup], targetIgnoredPatternIds, read, ref targetGroupState);
+                    if (_targetAcs[SignatureTargetGroups.Generic] is { } genericAc)
+                        ScanChunkWithRoot(genericAc, _acEntries[SignatureTargetGroups.Generic], _ndbAcEntries[SignatureTargetGroups.Generic], genericIgnoredPatternIds, read, ref genericGroupState);
+                }
+                else if (_contentAcEntries.Count != 0)
+                {
+                    ScanChunkWithRoot(_contentAc, _contentAcEntries, null, contentIgnoredPatternIds, read, ref contentAcState);
+                }
                 if (!collectAllMatches && hits.Count != 0 && !mustFinishForFalsePositiveCheck)
                     return (hits.Values.ToArray(), false, totalBytes);
             }

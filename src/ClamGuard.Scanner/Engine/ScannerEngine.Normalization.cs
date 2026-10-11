@@ -104,9 +104,12 @@ public sealed partial class ScannerEngine
         return results;
     }
 
+    private static byte[]? NormalizeTargetData(ReadOnlySpan<byte> data, string fileType, SignatureTargetType target, ScanOptions? options = null)
+        => NormalizeTargetData(data, fileType, (int)target, options);
+
     private static byte[]? NormalizeTargetData(ReadOnlySpan<byte> data, string fileType, int target, ScanOptions? options = null)
     {
-        if (target == 3 && (fileType.Equals("HTML", StringComparison.OrdinalIgnoreCase) || fileType.Equals("HTML_UTF16", StringComparison.OrdinalIgnoreCase)))
+        if ((target == 3 || target == (int)SignatureTargetType.Html) && (fileType.Equals("HTML", StringComparison.OrdinalIgnoreCase) || fileType.Equals("HTML_UTF16", StringComparison.OrdinalIgnoreCase)))
         {
             if (options is not null && (!options.ScanHTML || data.Length > options.Limits.MaxHtmlNormalize))
                 return null;
@@ -136,24 +139,34 @@ public sealed partial class ScannerEngine
 
     private static byte[] NormalizeAscii(ReadOnlySpan<byte> data)
     {
-        var text = Encoding.Latin1.GetString(data);
-        var normalized = new StringBuilder(text.Length);
+        // Operate directly on byte spans to eliminate string/StringBuilder allocation
+        var output = new byte[data.Length];
+        var outLen = 0;
         var pendingSpace = false;
-        foreach (var ch in text)
+        for (var i = 0; i < data.Length; i++)
         {
-            if (ch is >= '\x21' and <= '\x7e')
+            var b = data[i];
+            if (b is >= (byte)0x21 and <= (byte)0x7e)
             {
-                if (pendingSpace && normalized.Length != 0) normalized.Append(' ');
-                normalized.Append(char.ToLowerInvariant(ch));
+                if (pendingSpace && outLen != 0)
+                    output[outLen++] = (byte)' ';
+                // Fast ASCII lowercase
+                if (b is >= (byte)'A' and <= (byte)'Z')
+                    b = (byte)(b | 0x20);
+                output[outLen++] = b;
                 pendingSpace = false;
                 continue;
             }
-            if (ch is ' ' or '\t' or '\r' or '\n' or '\f' or '\v')
-                pendingSpace = normalized.Length != 0;
+            if (b is (byte)' ' or (byte)'\t' or (byte)'\r' or (byte)'\n' or (byte)'\f' or (byte)'\v')
+                pendingSpace = outLen != 0;
             // Other ASCII controls are dropped, matching the same compatibility
             // objective as ASCII-normalise rather than preserving binary noise.
         }
-        return Encoding.Latin1.GetBytes(normalized.ToString());
+        if (outLen == output.Length)
+            return output;
+        var result = new byte[outLen];
+        output.AsSpan(0, outLen).CopyTo(result);
+        return result;
     }
 
     private static byte[] NormalizeHtml(ReadOnlySpan<byte> data)
@@ -299,13 +312,16 @@ public sealed partial class ScannerEngine
         if (string.IsNullOrWhiteSpace(value) || value == "*") return true;
         if (value.Equals("EOF", StringComparison.OrdinalIgnoreCase)) return position == length;
         if (value.StartsWith("EOF-", StringComparison.OrdinalIgnoreCase) &&
-            int.TryParse(value[4..], out var eofShift))
+            int.TryParse(value.AsSpan(4), out var eofShift))
             return position == length - eofShift;
         if (int.TryParse(value, out var exact)) return position == exact;
-        var parts = value.Split(',', 2, StringSplitOptions.TrimEntries);
-        return parts.Length == 2 && int.TryParse(parts[0], out var min) && int.TryParse(parts[1], out var max)
-            ? position >= min && position <= max
-            : false;
+        // Allocation-free range check — avoid string.Split() per-match.
+        var comma = value.IndexOf(',');
+        if (comma > 0 && comma < value.Length - 1 &&
+            int.TryParse(value.AsSpan(0, comma).Trim(), out var min) &&
+            int.TryParse(value.AsSpan(comma + 1).Trim(), out var max))
+            return position >= min && position <= max;
+        return false;
     }
 
     internal sealed class SubsigMatches

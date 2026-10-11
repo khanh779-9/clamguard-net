@@ -54,6 +54,36 @@ public sealed partial class ScannerEngine
     public ScanResult Scan(string path, ScanOptions? options = null)
         => ScanAsync(path, options).GetAwaiter().GetResult();
 
+    /// <summary>
+    /// Light buffer scan for memory regions: the partitioned fixed-pattern
+    /// automata plus whole-buffer hashes and false-positive verification.
+    /// Logical signature evaluation is intentionally skipped so a region scan
+    /// stays bounded regardless of the logical database size.
+    /// </summary>
+    public ScanResult ScanMemoryBuffer(byte[] data, string label, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(data);
+        var options = new ScanOptions { CollectAllMatches = true };
+        options.Validate();
+        var effective = CreateEffectiveOptions(options);
+        effective.Limits.Validate();
+        var started = Stopwatch.StartNew();
+        var state = _databaseManager.Current;
+
+        if (data.Length == 0 || data.Length > effective.Limits.MaxFileSize)
+            return new ScanResult(ScanVerdict.Clean, label, "MEMORY", [], data.Length, started.Elapsed, state.Database.Databases.FirstOrDefault());
+
+        cancellationToken.ThrowIfCancellationRequested();
+        var detections = state.Compiled.Match(
+            data,
+            label,
+            includeNdb: true,
+            collectAllMatches: true,
+            targetGroup: SignatureTargetGroups.Generic);
+        var trusted = state.Compiled.MatchesFalsePositive(data);
+        return CreateDetectionResult(label, "MEMORY", detections, data.Length, started.Elapsed, state.Database.Databases.FirstOrDefault(), effective, trusted);
+    }
+
     public async Task<ScanResult> ScanAsync(string path, ScanOptions? options = null, CancellationToken cancellationToken = default)
     {
         options ??= new ScanOptions();
@@ -92,84 +122,89 @@ public sealed partial class ScannerEngine
             // ClamAV cli_determine_fmap_type() uses MAGIC_BUFFER_SIZE (1028 bytes)
             // for the initial file-type probe. Keep our fast path at the same scale;
             // formats with out-of-band markers are handled by targeted reads below.
+            //
+            // Consolidate all type-detection I/O into one FileStream with seeks.
+            // The previous code opened up to 4 separate File.OpenRead() handles
+            // (probe, ISO CD001, UDF BEA01, DMG koly tail). Each CreateFile()
+            // syscall costs ~10-50µs on Windows; avoiding 3 redundant opens adds
+            // up when scanning thousands of files.
             var probeLength = (int)Math.Min(1028L, info.Length);
             var probe = new byte[probeLength];
-            await using (var probeStream = File.OpenRead(path))
+            string rootType;
+            await using (var typeProbeStream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 4096, FileOptions.SequentialScan | FileOptions.Asynchronous))
             {
                 var readProbe = 0;
                 while (readProbe < probe.Length)
                 {
-                    var read = await probeStream.ReadAsync(probe.AsMemory(readProbe), cancellationToken);
+                    var read = await typeProbeStream.ReadAsync(probe.AsMemory(readProbe), cancellationToken);
                     if (read == 0) break;
                     readProbe += read;
                 }
                 if (readProbe != probe.Length)
                     probe = probe[..readProbe];
-            }
-            var rootType = DetectType(probe, path, state.Database.SpecialDatabases.FileTypes);
 
-            // .sdb rules are NDB-family rules marked as self-protection. ClamAV's
-            // self-protection scan runs against the raw layer before type-specific
-            // parsing. Our streaming NDB path now includes stream-safe SDB rules,
-            // while non-streamable rules are evaluated in the normal full-data path.
-            // This avoids forcing every file into a whole-file RAM buffer merely
-            // because an SDB database is loaded.
+                rootType = DetectType(probe, path, state.Database.SpecialDatabases.FileTypes);
 
-            // DMG stores the UDIF "koly" marker in a 512-byte trailer. Read that
-            // trailer separately so extensionless/non-standardly named disk images
-            // still enter the container-expansion path.
-            // ISO9660 uses the CD001 descriptor at sector 16 (offset 32769).
-            // ClamAV performs this as a targeted type-detection check rather than
-            // inflating the initial magic buffer.
-            if (rootType == "Unknown" && info.Length >= 32774)
-            {
-                var isoProbe = new byte[5];
-                await using var isoStream = File.OpenRead(path);
-                isoStream.Position = 32769;
-                var readIso = 0;
-                while (readIso < isoProbe.Length)
+                // .sdb rules are NDB-family rules marked as self-protection. ClamAV's
+                // self-protection scan runs against the raw layer before type-specific
+                // parsing. Our streaming NDB path now includes stream-safe SDB rules,
+                // while non-streamable rules are evaluated in the normal full-data path.
+                // This avoids forcing every file into a whole-file RAM buffer merely
+                // because an SDB database is loaded.
+
+                // ISO9660 uses the CD001 descriptor at sector 16 (offset 32769).
+                // ClamAV performs this as a targeted type-detection check rather than
+                // inflating the initial magic buffer.
+                if (rootType == "Unknown" && info.Length >= 32774)
                 {
-                    var read = await isoStream.ReadAsync(isoProbe.AsMemory(readIso), cancellationToken);
-                    if (read == 0) break;
-                    readIso += read;
+                    var isoProbe = new byte[5];
+                    typeProbeStream.Position = 32769;
+                    var readIso = 0;
+                    while (readIso < isoProbe.Length)
+                    {
+                        var read = await typeProbeStream.ReadAsync(isoProbe.AsMemory(readIso), cancellationToken);
+                        if (read == 0) break;
+                        readIso += read;
+                    }
+                    if (readIso == isoProbe.Length && isoProbe.AsSpan().SequenceEqual("CD001"u8))
+                        rootType = "ISO";
                 }
-                if (readIso == isoProbe.Length && isoProbe.AsSpan().SequenceEqual("CD001"u8))
-                    rootType = "ISO";
-            }
 
-            if (rootType == "Unknown" && info.Length >= 32773)
-            {
                 // UDF's primary implementation descriptor can be outside the
                 // 1028-byte magic window. ClamAV uses the file map for this, so
                 // keep the managed fast path targeted rather than reading the file.
-                var udfProbe = new byte[5];
-                await using var udfStream = File.OpenRead(path);
-                udfStream.Position = 32768;
-                var readUdf = 0;
-                while (readUdf < udfProbe.Length)
+                if (rootType == "Unknown" && info.Length >= 32773)
                 {
-                    var read = await udfStream.ReadAsync(udfProbe.AsMemory(readUdf), cancellationToken);
-                    if (read == 0) break;
-                    readUdf += read;
+                    var udfProbe = new byte[5];
+                    typeProbeStream.Position = 32768;
+                    var readUdf = 0;
+                    while (readUdf < udfProbe.Length)
+                    {
+                        var read = await typeProbeStream.ReadAsync(udfProbe.AsMemory(readUdf), cancellationToken);
+                        if (read == 0) break;
+                        readUdf += read;
+                    }
+                    if (readUdf == udfProbe.Length && udfProbe.AsSpan().SequenceEqual("BEA01"u8))
+                        rootType = "UDF";
                 }
-                if (readUdf == udfProbe.Length && udfProbe.AsSpan().SequenceEqual("BEA01"u8))
-                    rootType = "UDF";
-            }
 
-            if (rootType == "Unknown" && info.Length >= 512)
-            {
-                var tail = new byte[512];
-                await using var tailStream = File.OpenRead(path);
-                tailStream.Position = info.Length - tail.Length;
-                var readTail = 0;
-                while (readTail < tail.Length)
+                // DMG stores the UDIF "koly" marker in a 512-byte trailer. Read that
+                // trailer separately so extensionless/non-standardly named disk images
+                // still enter the container-expansion path.
+                if (rootType == "Unknown" && info.Length >= 512)
                 {
-                    var read = await tailStream.ReadAsync(tail.AsMemory(readTail), cancellationToken);
-                    if (read == 0) break;
-                    readTail += read;
+                    var tail = new byte[512];
+                    typeProbeStream.Position = info.Length - tail.Length;
+                    var readTail = 0;
+                    while (readTail < tail.Length)
+                    {
+                        var read = await typeProbeStream.ReadAsync(tail.AsMemory(readTail), cancellationToken);
+                        if (read == 0) break;
+                        readTail += read;
+                    }
+                    if (readTail == tail.Length && ArchiveScanner.LooksLikeDmg(tail))
+                        rootType = "DMG";
                 }
-                if (readTail == tail.Length && ArchiveScanner.LooksLikeDmg(tail))
-                    rootType = "DMG";
             }
 
             var signatureFileType = rootType.Equals("Unknown", StringComparison.OrdinalIgnoreCase) ? "OTHER" : rootType;
@@ -268,7 +303,8 @@ public sealed partial class ScannerEngine
                     collectAllMatches: (options.CollectAllMatches || !options.DetectPUA),
                     ndbFilter: useCombinedNdbIndex ? streamableNdb.Contains : null,
                     ndbPatternCandidates: containerPreScanned ? null : matchedFixedNdbCandidates,
-                    ndbCandidateFilter: containerPreScanned ? null : fixedNdbCandidateRules.Contains),
+                    ndbCandidateFilter: containerPreScanned ? null : fixedNdbCandidateRules.Contains,
+                    targetGroup: SignatureTargetGroups.FromFileType(signatureFileType)),
                     state.Compiled.MatchesFalsePositive(fullData),
                     info.Length);
             }
@@ -284,7 +320,8 @@ public sealed partial class ScannerEngine
                     cancellationToken,
                     includeNdb: streamableNdb.Count != 0,
                     collectAllMatches: (options.CollectAllMatches || !options.DetectPUA),
-                    ndbFilter: streamableNdb.Count == 0 ? null : streamableNdb.Contains);
+                    ndbFilter: streamableNdb.Count == 0 ? null : streamableNdb.Contains,
+                    targetGroup: SignatureTargetGroups.FromFileType(signatureFileType));
             }
 
             if (rawMatch.Trusted)
@@ -312,8 +349,16 @@ public sealed partial class ScannerEngine
                     ? "OTHER"
                     : logicalType;
 
-                if (logicalSignatures.Length != 0 || ndbSignatures.Length != 0)
+                var hasSignatureGroups = logicalSignatures.Length != 0 || ndbSignatures.Length != 0;
+                var peGroupActive = specializedRules && options.ScanPE && ScanTypePolicy.IsPe(rootType);
+                if (hasSignatureGroups || peGroupActive)
                 {
+                    // ClamAV evaluates the target-specific signature groups after
+                    // the raw pass. The groups are independent read-only passes
+                    // over the materialized buffer, so they run concurrently and
+                    // are combined in priority order (NDB -> logical -> PE). With
+                    // CollectAllMatches disabled the first blocking group cancels
+                    // the remaining groups (|| semantics).
                     IEnumerable<NdbSignature> materializedNdb = prepared.GetNdbRules(signatureFileType).ApplicableRaw;
                     if (!containerPreScanned)
                     {
@@ -324,28 +369,63 @@ public sealed partial class ScannerEngine
                              matchedFixedNdbCandidates.Contains(x)));
                     }
 
-                    detections.AddRange(EvaluateNdb(
-                        materializedNdb,
-                        fullData,
-                        options.Limits,
-                        signatureFileType,
-                        cancellationToken,
-                        scanOptions: options));
-                    if (!options.CollectAllMatches && options.HasBlockingDetections(detections))
-                        return CreateDetectionResult(path, rootType, detections, rawMatch.BytesRead, started.Elapsed, state.Database.Databases.FirstOrDefault(), options);
-                    var applicableLogical = prepared.GetLogicalSignatures(signatureFileType)
+                    var ndbGroupSigs = materializedNdb.ToArray();
+                    var logicalGroupSigs = prepared.GetLogicalSignatures(signatureFileType)
                         .Where(x => (x.Target?.MinFileSize is null || fullData.Length >= x.Target.MinFileSize.Value) &&
                                     (x.Target?.MaxFileSize is null || fullData.Length <= x.Target.MaxFileSize.Value))
                         .ToArray();
 
-                    detections.AddRange(EvaluateLogical(applicableLogical, ndbSignatures, fullData, options.Limits, signatureFileType, state.Database.IconDatabase, [], cancellationToken, scanState: state, scanOptions: options));
-                    if (!options.CollectAllMatches && options.HasBlockingDetections(detections))
-                        return CreateDetectionResult(path, rootType, detections, rawMatch.BytesRead, started.Elapsed, state.Database.Databases.FirstOrDefault(), options);
-                }
-                if (specializedRules)
-                {
-                    if (options.ScanPE && ScanTypePolicy.IsPe(rootType))
-                        detections.AddRange(PeSpecializedMatcher.Match(fullData, state, options.Limits, cancellationToken));
+                    using var groupCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                    var groupToken = groupCts.Token;
+
+                    var ndbTask = hasSignatureGroups && ndbGroupSigs.Length != 0
+                        ? Task.Run(() => EvaluateNdbBuffered(ndbGroupSigs, fullData, options.Limits, signatureFileType, groupToken, options), groupToken)
+                        : null;
+                    var logicalTask = hasSignatureGroups && logicalGroupSigs.Length != 0
+                        ? Task.Run(() => EvaluateLogicalBuffered(logicalGroupSigs, ndbSignatures, fullData, options.Limits, signatureFileType, state.Database.IconDatabase, groupToken, state, options), groupToken)
+                        : null;
+                    var peTask = peGroupActive
+                        ? Task.Run(() => PeSpecializedMatcher.Match(fullData, state, options.Limits, groupToken), groupToken)
+                        : null;
+
+                    IReadOnlyList<Detection> ndbResult = [];
+                    IReadOnlyList<Detection> logicalResult = [];
+                    IReadOnlyList<Detection> peResult = [];
+                    var pending = new List<Task>();
+                    if (ndbTask is not null) pending.Add(ndbTask);
+                    if (logicalTask is not null) pending.Add(logicalTask);
+                    if (peTask is not null) pending.Add(peTask);
+
+                    while (pending.Count != 0)
+                    {
+                        var finished = await Task.WhenAny(pending).ConfigureAwait(true);
+                        pending.Remove(finished);
+                        try
+                        {
+                            if (finished == ndbTask) ndbResult = await ndbTask.ConfigureAwait(true);
+                            else if (finished == logicalTask) logicalResult = await logicalTask.ConfigureAwait(true);
+                            else peResult = await peTask!.ConfigureAwait(true);
+                        }
+                        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                        {
+                            // The group was cancelled by the || short-circuit below.
+                        }
+
+                        IReadOnlyList<Detection> available = ndbResult.Count > 0
+                            ? ndbResult
+                            : logicalResult.Count > 0
+                                ? logicalResult
+                                : peResult;
+                        if (!options.CollectAllMatches && options.HasBlockingDetections(available))
+                        {
+                            groupCts.Cancel();
+                            break;
+                        }
+                    }
+
+                    detections.AddRange(ndbResult);
+                    detections.AddRange(logicalResult);
+                    detections.AddRange(peResult);
                     if (!options.CollectAllMatches && options.HasBlockingDetections(detections))
                         return CreateDetectionResult(path, rootType, detections, rawMatch.BytesRead, started.Elapsed, state.Database.Databases.FirstOrDefault(), options);
                 }
@@ -482,7 +562,9 @@ public sealed partial class ScannerEngine
             throw new InvalidDataException("File is too large to materialize in the managed scan path.");
 
         var buffer = new byte[length];
-        await using var input = File.OpenRead(path);
+        // Use FileOptions.Asynchronous so Windows uses overlapped I/O, and
+        // SequentialScan so the OS prefetches the file data ahead of reads.
+        await using var input = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 65536, FileOptions.Asynchronous | FileOptions.SequentialScan);
         var totalRead = 0;
         while (totalRead < buffer.Length)
         {

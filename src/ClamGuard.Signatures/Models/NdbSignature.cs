@@ -5,10 +5,13 @@ namespace ClamGuard.Signatures;
 public sealed record NdbSignature(
     string Name,
     string SourceFile,
-    int Target,
+    SignatureTargetType Target,
     string OffsetExpression,
     HexPattern Pattern,
     int? MinimumFunctionalityLevel = null,
     int? MaximumFunctionalityLevel = null,
     int? MacroGroup = null,
-    bool IsSelfProtection = false) : Signature(Name, SignatureType.Ndb, SourceFile);
+    bool IsSelfProtection = false) : Signature(Name, SignatureType.Ndb, SourceFile)
+{
+    public SignatureTargetType TargetType => Target;
+}
