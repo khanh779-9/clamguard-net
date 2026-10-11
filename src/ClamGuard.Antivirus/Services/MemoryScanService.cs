@@ -14,11 +14,12 @@ public sealed class MemoryScanService
 {
     private readonly Func<byte[], string, CancellationToken, Task<ScanResult>> _scanChunk;
 
-    private const int MaxProcesses = 128;
-    private const long MaxBytesPerProcess = 64L * 1024 * 1024;
-    private const int MaxRegionBytes = 32 * 1024 * 1024;
+    private const int MaxProcesses = 96;
+    private const long MaxBytesPerProcess = 32L * 1024 * 1024;
+    private const int MaxRegionBytes = 16 * 1024 * 1024;
     private const int ChunkSize = 4 * 1024 * 1024;
     private const int ChunkOverlap = 4096;
+    private const long MaxTotalBytes = 768L * 1024 * 1024;
 
     private const uint ProcessVmRead = 0x0010;
     private const uint ProcessQueryInformation = 0x0400;
@@ -45,10 +46,14 @@ public sealed class MemoryScanService
         var skippedProcesses = 0;
         var scannedRegions = 0;
         long scannedBytes = 0;
+        long remainingBudget = MaxTotalBytes;
 
         for (var i = 0; i < processes.Length; i++)
         {
             token.ThrowIfCancellationRequested();
+            if (Volatile.Read(ref remainingBudget) <= 0)
+                break;
+
             var process = processes[i];
             var name = SafeProcessName(process);
             progress($"{name} ({i + 1}/{processes.Length})");
@@ -61,15 +66,27 @@ public sealed class MemoryScanService
             }
 
             scannedProcesses++;
-            foreach (var (label, data) in regions)
-            {
-                token.ThrowIfCancellationRequested();
-                scannedRegions++;
-                scannedBytes += data.LongLength;
-                var result = await _scanChunk(data, label, token).ConfigureAwait(false);
-                if (result.Verdict is ScanVerdict.Malicious or ScanVerdict.PotentiallyUnwanted or ScanVerdict.StrongIndicator)
-                    threat(result);
-            }
+
+            // Regions are independent buffers; scanning them in parallel keeps
+            // the wall time reasonable on real process memory footprints.
+            await Parallel.ForEachAsync(regions,
+                new ParallelOptions { CancellationToken = token, MaxDegreeOfParallelism = Math.Max(2, Environment.ProcessorCount / 2) },
+                async (region, ct) =>
+                {
+                    var (label, data) = region;
+                    if (Interlocked.Add(ref remainingBudget, -data.LongLength) < 0)
+                        return;
+
+                    // Entirely zero-filled regions cannot contain signature hits.
+                    if (data.AsSpan().IndexOfAnyExcept((byte)0) < 0)
+                        return;
+
+                    Interlocked.Increment(ref scannedRegions);
+                    Interlocked.Add(ref scannedBytes, data.LongLength);
+                    var result = await _scanChunk(data, label, ct).ConfigureAwait(false);
+                    if (result.Verdict is ScanVerdict.Malicious or ScanVerdict.PotentiallyUnwanted or ScanVerdict.StrongIndicator)
+                        threat(result);
+                }).ConfigureAwait(false);
 
             progress($"{name} ({i + 1}/{processes.Length}) · {scannedRegions} regions");
         }

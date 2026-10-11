@@ -13,7 +13,7 @@
                 <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
 
-            <Border Style="{DynamicResource Style.Card}" Padding="16">
+            <Border Style="{DynamicResource Style.Card}" Padding="13">
                 <Grid>
                     <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
                     <StackPanel>
@@ -36,10 +36,10 @@
                     <ColumnDefinition Width="*" /><ColumnDefinition Width="10" /><ColumnDefinition Width="*" />
                     <ColumnDefinition Width="10" /><ColumnDefinition Width="*" /><ColumnDefinition Width="10" /><ColumnDefinition Width="*" />
                 </Grid.ColumnDefinitions>
-                <Border Grid.Column="0" Style="{DynamicResource Style.Card}" Padding="14"><StackPanel><TextBlock Text="{loc:Loc system.cpu}" Style="{DynamicResource Style.SectionLabel}" /><TextBlock Text="{Binding SystemLogicalProcessors}" Style="{DynamicResource Style.MetricValue}" /><TextBlock Text="{loc:Loc common.logical}" Style="{DynamicResource Style.MetricLabel}" /></StackPanel></Border>
-                <Border Grid.Column="2" Style="{DynamicResource Style.Card}" Padding="14"><StackPanel><TextBlock Text="{loc:Loc system.memory}" Style="{DynamicResource Style.SectionLabel}" /><TextBlock Text="{Binding SystemMemoryText}" Style="{DynamicResource Style.MetricValue}" /><TextBlock Text="{loc:Loc common.available_total}" Style="{DynamicResource Style.MetricLabel}" /></StackPanel></Border>
-                <Border Grid.Column="4" Style="{DynamicResource Style.Card}" Padding="14"><StackPanel><TextBlock Text="{loc:Loc system.uptime}" Style="{DynamicResource Style.SectionLabel}" /><TextBlock Text="{Binding SystemUptimeText}" Style="{DynamicResource Style.MetricValue}" /><TextBlock Text="{loc:Loc common.since_boot}" Style="{DynamicResource Style.MetricLabel}" /></StackPanel></Border>
-                <Border Grid.Column="6" Style="{DynamicResource Style.Card}" Padding="14"><StackPanel><TextBlock Text="{loc:Loc system.storage}" Style="{DynamicResource Style.SectionLabel}" /><TextBlock Text="{Binding Drives.Count}" Style="{DynamicResource Style.MetricValue}" /><TextBlock Text="{loc:Loc common.mounted_volumes}" Style="{DynamicResource Style.MetricLabel}" /></StackPanel></Border>
+                <Border Grid.Column="0" Style="{DynamicResource Style.Card}" Padding="12"><StackPanel><TextBlock Text="{loc:Loc system.cpu}" Style="{DynamicResource Style.SectionLabel}" /><TextBlock Text="{Binding SystemLogicalProcessors}" Style="{DynamicResource Style.MetricValue}" /><TextBlock Text="{loc:Loc common.logical}" Style="{DynamicResource Style.MetricLabel}" /></StackPanel></Border>
+                <Border Grid.Column="2" Style="{DynamicResource Style.Card}" Padding="12"><StackPanel><TextBlock Text="{loc:Loc system.memory}" Style="{DynamicResource Style.SectionLabel}" /><TextBlock Text="{Binding SystemMemoryText}" Style="{DynamicResource Style.MetricValue}" /><TextBlock Text="{loc:Loc common.available_total}" Style="{DynamicResource Style.MetricLabel}" /></StackPanel></Border>
+                <Border Grid.Column="4" Style="{DynamicResource Style.Card}" Padding="12"><StackPanel><TextBlock Text="{loc:Loc system.uptime}" Style="{DynamicResource Style.SectionLabel}" /><TextBlock Text="{Binding SystemUptimeText}" Style="{DynamicResource Style.MetricValue}" /><TextBlock Text="{loc:Loc common.since_boot}" Style="{DynamicResource Style.MetricLabel}" /></StackPanel></Border>
+                <Border Grid.Column="6" Style="{DynamicResource Style.Card}" Padding="12"><StackPanel><TextBlock Text="{loc:Loc system.storage}" Style="{DynamicResource Style.SectionLabel}" /><TextBlock Text="{Binding Drives.Count}" Style="{DynamicResource Style.MetricValue}" /><TextBlock Text="{loc:Loc common.mounted_volumes}" Style="{DynamicResource Style.MetricLabel}" /></StackPanel></Border>
             </Grid>
 
             <Border Grid.Row="4" Style="{DynamicResource Style.Card}" Padding="0" ClipToBounds="True">

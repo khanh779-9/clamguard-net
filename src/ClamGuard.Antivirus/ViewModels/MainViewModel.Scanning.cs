@@ -306,16 +306,25 @@ public sealed partial class MainViewModel
     {
         var task = _tracker.Start("MemoryScan", LocalizationService.Instance.Get("scan.memory"), string.Empty, isCancellable: true, token);
         var collected = new List<ScanResult>();
+        // Region scanning runs on pool threads; marshal UI-bound callbacks back
+        // to the captured context (AddHistory mutates an ObservableCollection).
+        var ui = SynchronizationContext.Current;
+        void Marshal(Action action)
+        {
+            if (ui is not null) ui.Post(_ => action(), null);
+            else action();
+        }
+
         try
         {
             var summary = await Task.Run(() => _memoryScan.ScanAsync(
-                text => task.ProgressText = text,
-                result =>
+                text => Marshal(() => task.ProgressText = text),
+                result => Marshal(() =>
                 {
                     collected.Add(result);
                     task.ThreatsFound++;
                     AddHistory(result, "Memory Scan");
-                },
+                }),
                 task.Token), task.Token).ConfigureAwait(true);
 
             task.Percent = 100;

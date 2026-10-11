@@ -18,7 +18,7 @@
 
         <Border Grid.Column="0" Background="{DynamicResource Brush.Sidebar}"
                 BorderBrush="{DynamicResource Brush.Border}" BorderThickness="0,0,1,0">
-            <Grid Margin="0,20,0,18">
+            <Grid Margin="0,14,0,12">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="18" />
@@ -68,7 +68,7 @@
                                  Click="Nav_Click" Style="{DynamicResource Style.NavItem}" />
                 </StackPanel>
 
-                <Border Grid.Row="4" Margin="14,12,14,0" Padding="12"
+                <Border Grid.Row="4" Margin="10,10,10,0" Padding="11"
                         Background="{DynamicResource Brush.SurfaceSubtle}" BorderBrush="{DynamicResource Brush.Border}"
                         BorderThickness="1">
                     <StackPanel>
@@ -97,7 +97,7 @@
                         <ColumnDefinition Width="*" />
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
-                    <StackPanel Margin="0,0,20,0" MinWidth="0">
+                    <StackPanel Margin="0,0,14,0" MinWidth="0">
                         <TextBlock Text="{loc:Loc app.caption}" Style="{DynamicResource Style.SectionLabel}" />
                         <TextBlock Text="{Binding HeaderTitle}" Margin="0,5,0,0" FontSize="25" FontWeight="SemiBold"
                                    Foreground="{DynamicResource Brush.TextPrimary}" TextWrapping="Wrap" />

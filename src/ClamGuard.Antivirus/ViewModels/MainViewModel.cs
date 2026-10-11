@@ -64,12 +64,14 @@ public sealed partial class MainViewModel : INotifyPropertyChanged
         _tracker.Changed += (_, _) => OnTrackerChanged();
         _tracker.ProgressChanged += (_, _) => OnTrackerChanged();
 
-        QuickScanCommand = new RelayCommand(() => QuickScanRequested?.Invoke(this, EventArgs.Empty), () => DatabaseReady);
-        CustomScanCommand = new RelayCommand(() => CustomScanRequested?.Invoke(this, EventArgs.Empty), () => DatabaseReady);
-        SmartScanCommand = new RelayCommand(() => SmartScanRequested?.Invoke(this, EventArgs.Empty), () => DatabaseReady);
-        CriticalScanCommand = new RelayCommand(() => CriticalScanRequested?.Invoke(this, EventArgs.Empty), () => DatabaseReady);
-        MemoryScanCommand = new RelayCommand(() => MemoryScanRequested?.Invoke(this, EventArgs.Empty), () => DatabaseReady);
-        StartupScanCommand = new RelayCommand(() => StartupScanRequested?.Invoke(this, EventArgs.Empty), () => DatabaseReady);
+        // Scan-mode commands stay executable so a click always gives feedback;
+        // the handlers toast when the database is not ready yet.
+        QuickScanCommand = new RelayCommand(() => QuickScanRequested?.Invoke(this, EventArgs.Empty));
+        CustomScanCommand = new RelayCommand(() => CustomScanRequested?.Invoke(this, EventArgs.Empty));
+        SmartScanCommand = new RelayCommand(() => SmartScanRequested?.Invoke(this, EventArgs.Empty));
+        CriticalScanCommand = new RelayCommand(() => CriticalScanRequested?.Invoke(this, EventArgs.Empty));
+        MemoryScanCommand = new RelayCommand(() => MemoryScanRequested?.Invoke(this, EventArgs.Empty));
+        StartupScanCommand = new RelayCommand(() => StartupScanRequested?.Invoke(this, EventArgs.Empty));
         UpdateCommand = new RelayCommand(() => UpdateRequested?.Invoke(this, EventArgs.Empty));
         ConfigureSecurityCommand = new RelayCommand(() => ConfigureSecurityRequested?.Invoke(this, EventArgs.Empty));
         OpenToolsCommand = new RelayCommand(() => OpenToolsRequested?.Invoke(this, EventArgs.Empty));

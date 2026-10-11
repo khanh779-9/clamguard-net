@@ -7,7 +7,7 @@
     <Grid>
         <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,6,0">
         <StackPanel>
-            <Border Style="{DynamicResource Style.CardEmphasis}" Padding="20">
+            <Border Style="{DynamicResource Style.CardEmphasis}" Padding="16">
                 <Grid>
                     <Grid.ColumnDefinitions><ColumnDefinition Width="64" /><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
                     <Border Width="56" Height="56" Background="{DynamicResource Brush.PrimarySoft}" CornerRadius="14">
@@ -46,9 +46,9 @@
 
             <Grid Margin="0,14,0,0">
                 <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="10" /><ColumnDefinition Width="*" /><ColumnDefinition Width="10" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
-                <Border Grid.Column="0" Style="{DynamicResource Style.Card}" Padding="15"><StackPanel><TextBlock Text="{loc:Loc overview.scan_records}" Style="{DynamicResource Style.SectionLabel}" /><TextBlock Text="{Binding TotalReports}" Style="{DynamicResource Style.MetricValue}" /><TextBlock Text="{loc:Loc overview.recent_scans}" Style="{DynamicResource Style.MetricLabel}" /></StackPanel></Border>
-                <Border Grid.Column="2" Style="{DynamicResource Style.Card}" Padding="15"><StackPanel><TextBlock Text="{loc:Loc overview.threats}" Style="{DynamicResource Style.SectionLabel}" /><TextBlock Text="{Binding ThreatReports}" Style="{DynamicResource Style.MetricValue}" Foreground="{DynamicResource Brush.Danger}" /><TextBlock Text="{loc:Loc overview.detected_history}" Style="{DynamicResource Style.MetricLabel}" /></StackPanel></Border>
-                <Border Grid.Column="4" Style="{DynamicResource Style.Card}" Padding="15"><StackPanel><TextBlock Text="{loc:Loc overview.signatures}" Style="{DynamicResource Style.SectionLabel}" /><TextBlock Text="{Binding SignatureCount, StringFormat={}{0:N0}}" Style="{DynamicResource Style.MetricValue}" /><TextBlock Text="{loc:Loc overview.loaded_engine}" Style="{DynamicResource Style.MetricLabel}" /></StackPanel></Border>
+                <Border Grid.Column="0" Style="{DynamicResource Style.Card}" Padding="13"><StackPanel><TextBlock Text="{loc:Loc overview.scan_records}" Style="{DynamicResource Style.SectionLabel}" /><TextBlock Text="{Binding TotalReports}" Style="{DynamicResource Style.MetricValue}" /><TextBlock Text="{loc:Loc overview.recent_scans}" Style="{DynamicResource Style.MetricLabel}" /></StackPanel></Border>
+                <Border Grid.Column="2" Style="{DynamicResource Style.Card}" Padding="13"><StackPanel><TextBlock Text="{loc:Loc overview.threats}" Style="{DynamicResource Style.SectionLabel}" /><TextBlock Text="{Binding ThreatReports}" Style="{DynamicResource Style.MetricValue}" Foreground="{DynamicResource Brush.Danger}" /><TextBlock Text="{loc:Loc overview.detected_history}" Style="{DynamicResource Style.MetricLabel}" /></StackPanel></Border>
+                <Border Grid.Column="4" Style="{DynamicResource Style.Card}" Padding="13"><StackPanel><TextBlock Text="{loc:Loc overview.signatures}" Style="{DynamicResource Style.SectionLabel}" /><TextBlock Text="{Binding SignatureCount, StringFormat={}{0:N0}}" Style="{DynamicResource Style.MetricValue}" /><TextBlock Text="{loc:Loc overview.loaded_engine}" Style="{DynamicResource Style.MetricLabel}" /></StackPanel></Border>
             </Grid>
 
             <TextBlock Text="{loc:Loc overview.quick_actions}" Margin="2,18,0,9" Style="{DynamicResource Style.SectionLabel}" />
@@ -56,7 +56,7 @@
                 <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="10" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
                 <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="10" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
 
-                <Border Grid.Column="0" Style="{DynamicResource Style.Card}" Padding="16">
+                <Border Grid.Column="0" Style="{DynamicResource Style.Card}" Padding="13">
                     <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="42" /><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
                         <Border Width="42" Height="42" Background="{DynamicResource Brush.PrimarySoft}"><Path Width="20" Height="20" HorizontalAlignment="Center" VerticalAlignment="Center" Stroke="{DynamicResource Brush.Primary}" StrokeThickness="1.6" Stretch="Uniform" Data="{DynamicResource Icon.Scan}" /></Border>
                         <StackPanel Grid.Column="1" Margin="12,0,12,0" VerticalAlignment="Center"><TextBlock Text="{loc:Loc overview.scan_file}" Style="{DynamicResource Style.CardTitle}" /><TextBlock Text="{loc:Loc overview.scan_file_desc}" Margin="0,3,0,0" Style="{DynamicResource Style.MutedText}" /></StackPanel>
@@ -64,7 +64,7 @@
                     </Grid>
                 </Border>
 
-                <Border Grid.Column="2" Style="{DynamicResource Style.Card}" Padding="16">
+                <Border Grid.Column="2" Style="{DynamicResource Style.Card}" Padding="13">
                     <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="42" /><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
                         <Border Width="42" Height="42" Background="{DynamicResource Brush.SurfaceSubtle}"><Path Width="20" Height="20" HorizontalAlignment="Center" VerticalAlignment="Center" Stroke="{DynamicResource Brush.TextSecondary}" StrokeThickness="1.6" Stretch="Uniform" Data="{DynamicResource Icon.Folder}" /></Border>
                         <StackPanel Grid.Column="1" Margin="12,0,12,0" VerticalAlignment="Center"><TextBlock Text="{loc:Loc overview.scan_folder}" Style="{DynamicResource Style.CardTitle}" /><TextBlock Text="{loc:Loc overview.scan_folder_desc}" Margin="0,3,0,0" Style="{DynamicResource Style.MutedText}" /></StackPanel>
@@ -72,7 +72,7 @@
                     </Grid>
                 </Border>
 
-                <Border Grid.Row="2" Grid.Column="0" Style="{DynamicResource Style.Card}" Padding="16">
+                <Border Grid.Row="2" Grid.Column="0" Style="{DynamicResource Style.Card}" Padding="13">
                     <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="42" /><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
                         <Border Width="42" Height="42" Background="{DynamicResource Brush.SuccessSoft}"><Path Width="20" Height="20" HorizontalAlignment="Center" VerticalAlignment="Center" Stroke="{DynamicResource Brush.Success}" StrokeThickness="1.5" Stretch="Uniform" Data="{DynamicResource Icon.Update}" /></Border>
                         <StackPanel Grid.Column="1" Margin="12,0,12,0" VerticalAlignment="Center"><TextBlock Text="{loc:Loc overview.update}" Style="{DynamicResource Style.CardTitle}" /><TextBlock Text="{loc:Loc overview.update_desc}" Margin="0,3,0,0" Style="{DynamicResource Style.MutedText}" /></StackPanel>
@@ -80,7 +80,7 @@
                     </Grid>
                 </Border>
 
-                <Border Grid.Row="2" Grid.Column="2" Style="{DynamicResource Style.Card}" Padding="16">
+                <Border Grid.Row="2" Grid.Column="2" Style="{DynamicResource Style.Card}" Padding="13">
                     <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="42" /><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
                         <Border Width="42" Height="42" Background="{DynamicResource Brush.WarningSoft}"><Path Width="20" Height="20" HorizontalAlignment="Center" VerticalAlignment="Center" Stroke="{DynamicResource Brush.Warning}" StrokeThickness="1.5" Stretch="Uniform" Data="{DynamicResource Icon.Security}" /></Border>
                         <StackPanel Grid.Column="1" Margin="12,0,12,0" VerticalAlignment="Center"><TextBlock Text="{loc:Loc overview.realtime}" Style="{DynamicResource Style.CardTitle}" /><TextBlock Text="{loc:Loc overview.realtime_desc}" Margin="0,3,0,0" Style="{DynamicResource Style.MutedText}" /></StackPanel>

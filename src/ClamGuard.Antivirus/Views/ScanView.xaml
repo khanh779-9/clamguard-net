@@ -12,7 +12,7 @@
                       Visibility="{Binding IsShowingScanResults, Converter={StaticResource InverseBooleanToVisibilityConverter}}">
             <StackPanel>
                 <!-- CARD A: Header Banner -->
-                <Border Style="{DynamicResource Style.CardEmphasis}" Padding="18">
+                <Border Style="{DynamicResource Style.CardEmphasis}" Padding="14">
                     <Grid>
                         <Grid.ColumnDefinitions><ColumnDefinition Width="46" /><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
                         <Border Width="42" Height="42" Background="{DynamicResource Brush.PrimarySoft}">
@@ -30,7 +30,7 @@
 
 
                 <!-- CARD B: Scan Modes (always available while the database is ready) -->
-                <Border Margin="0,14,0,0" Style="{DynamicResource Style.Card}" Padding="18">
+                <Border Margin="0,14,0,0" Style="{DynamicResource Style.Card}" Padding="14">
                     <StackPanel>
                         <Grid>
                             <Grid.ColumnDefinitions>
@@ -52,7 +52,7 @@
 
                         <UniformGrid Columns="3" Rows="2" Margin="0,12,0,0">
                             <!-- Smart Scan -->
-                            <Border Style="{DynamicResource Style.CardQuiet}" Padding="12" Margin="0,0,8,8">
+                            <Border Style="{DynamicResource Style.CardQuiet}" Padding="11" Margin="0,0,8,8">
                                 <StackPanel>
                                     <StackPanel Orientation="Horizontal">
                                         <Border Width="30" Height="30" Background="{DynamicResource Brush.PrimarySoft}">
@@ -69,7 +69,7 @@
                             </Border>
 
                             <!-- Critical Scan -->
-                            <Border Style="{DynamicResource Style.CardQuiet}" Padding="12" Margin="4,0,4,8">
+                            <Border Style="{DynamicResource Style.CardQuiet}" Padding="11" Margin="4,0,4,8">
                                 <StackPanel>
                                     <StackPanel Orientation="Horizontal">
                                         <Border Width="30" Height="30" Background="{DynamicResource Brush.WarningSoft}">
@@ -86,7 +86,7 @@
                             </Border>
 
                             <!-- Memory Scan -->
-                            <Border Style="{DynamicResource Style.CardQuiet}" Padding="12" Margin="8,0,0,8">
+                            <Border Style="{DynamicResource Style.CardQuiet}" Padding="11" Margin="8,0,0,8">
                                 <StackPanel>
                                     <StackPanel Orientation="Horizontal">
                                         <Border Width="30" Height="30" Background="{DynamicResource Brush.SuccessSoft}">
@@ -103,7 +103,7 @@
                             </Border>
 
                             <!-- Startup Scan -->
-                            <Border Style="{DynamicResource Style.CardQuiet}" Padding="12" Margin="0,8,8,0">
+                            <Border Style="{DynamicResource Style.CardQuiet}" Padding="11" Margin="0,8,8,0">
                                 <StackPanel>
                                     <StackPanel Orientation="Horizontal">
                                         <Border Width="30" Height="30" Background="{DynamicResource Brush.SurfaceSubtle}">
@@ -120,7 +120,7 @@
                             </Border>
 
                             <!-- Scan File -->
-                            <Border Style="{DynamicResource Style.CardQuiet}" Padding="12" Margin="4,8,4,0">
+                            <Border Style="{DynamicResource Style.CardQuiet}" Padding="11" Margin="4,8,4,0">
                                 <StackPanel>
                                     <StackPanel Orientation="Horizontal">
                                         <Border Width="30" Height="30" Background="{DynamicResource Brush.PrimarySoft}">
@@ -137,7 +137,7 @@
                             </Border>
 
                             <!-- Scan Folder -->
-                            <Border Style="{DynamicResource Style.CardQuiet}" Padding="12" Margin="8,8,0,0">
+                            <Border Style="{DynamicResource Style.CardQuiet}" Padding="11" Margin="8,8,0,0">
                                 <StackPanel>
                                     <StackPanel Orientation="Horizontal">
                                         <Border Width="30" Height="30" Background="{DynamicResource Brush.SurfaceSubtle}">
@@ -157,14 +157,14 @@
                 </Border>
 
                 <!-- CARD C: Active Tasks (parallel scans, one row per running task) -->
-                <Border Margin="0,14,0,0" Style="{DynamicResource Style.Card}" Padding="18"
+                <Border Margin="0,14,0,0" Style="{DynamicResource Style.Card}" Padding="14"
                         Visibility="{Binding IsScanning, Converter={StaticResource BoolToVisibilityConverter}}">
                     <StackPanel>
                         <TextBlock Text="{loc:Loc scan.active_tasks}" Style="{DynamicResource Style.SectionLabel}" />
                         <ItemsControl ItemsSource="{Binding ActiveTasks}" Margin="0,10,0,0">
                             <ItemsControl.ItemTemplate>
                                 <DataTemplate>
-                                    <Border Style="{DynamicResource Style.CardQuiet}" Padding="12" Margin="0,0,0,8">
+                                    <Border Style="{DynamicResource Style.CardQuiet}" Padding="11" Margin="0,0,0,8">
                                         <Grid>
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="*" />
@@ -220,7 +220,7 @@
                 </Border>
 
                 <!-- CARD D: Safety limits advice -->
-                <Border Margin="0,14,0,0" Style="{DynamicResource Style.CardQuiet}" Padding="15">
+                <Border Margin="0,14,0,0" Style="{DynamicResource Style.CardQuiet}" Padding="13">
                     <StackPanel Orientation="Horizontal">
                         <Path Width="15" Height="15" Margin="0,1,9,0" Stroke="{DynamicResource Brush.TextSecondary}" StrokeThickness="1.5" Data="{DynamicResource Icon.Info}" />
                         <StackPanel>
@@ -414,7 +414,7 @@
             </Border>
 
             <!-- Bottom Detail Panel -->
-            <Border Grid.Row="4" Style="{DynamicResource Style.CardQuiet}" Padding="14">
+            <Border Grid.Row="4" Style="{DynamicResource Style.CardQuiet}" Padding="12">
                 <Grid>
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*" />

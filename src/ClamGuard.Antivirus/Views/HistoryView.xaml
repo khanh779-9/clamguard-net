@@ -56,8 +56,8 @@
             </Grid>
         </Border>
 
-        <Border Grid.Row="4" Style="{DynamicResource Style.CardQuiet}" Padding="14">
-            <StackPanel><TextBlock Text="{loc:Loc history.selected}" Style="{DynamicResource Style.SectionLabel}" /><Border Margin="0,8,0,0" Style="{DynamicResource Style.Card}" Padding="12" Effect="{x:Null}"><TextBlock x:Name="HistoryDetailText" FontFamily="Consolas" FontSize="10.5" TextWrapping="Wrap" Foreground="{DynamicResource Brush.TextSecondary}" Text="{loc:Loc history.select_entry}" /></Border></StackPanel>
+        <Border Grid.Row="4" Style="{DynamicResource Style.CardQuiet}" Padding="12">
+            <StackPanel><TextBlock Text="{loc:Loc history.selected}" Style="{DynamicResource Style.SectionLabel}" /><Border Margin="0,8,0,0" Style="{DynamicResource Style.Card}" Padding="11" Effect="{x:Null}"><TextBlock x:Name="HistoryDetailText" FontFamily="Consolas" FontSize="10.5" TextWrapping="Wrap" Foreground="{DynamicResource Brush.TextSecondary}" Text="{loc:Loc history.select_entry}" /></Border></StackPanel>
         </Border>
     </Grid>
 </UserControl>

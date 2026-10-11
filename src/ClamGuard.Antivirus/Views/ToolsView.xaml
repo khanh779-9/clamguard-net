@@ -18,7 +18,7 @@
 
                 <Border Grid.Column="0"
                         Style="{DynamicResource Style.Card}"
-                        Padding="16">
+                        Padding="13">
                     <StackPanel>
                         <TextBlock Text="{loc:Loc tools.engine_status}"
                                    Style="{DynamicResource Style.SectionLabel}" />
@@ -32,7 +32,7 @@
 
                 <Border Grid.Column="2"
                         Style="{DynamicResource Style.Card}"
-                        Padding="16">
+                        Padding="13">
                     <StackPanel>
                         <TextBlock Text="{loc:Loc tools.database_version}"
                                    Style="{DynamicResource Style.SectionLabel}" />
@@ -48,7 +48,7 @@
             <!-- Database overview and update action -->
             <Border Margin="0,12,0,0"
                     Style="{DynamicResource Style.Card}"
-                    Padding="18">
+                    Padding="14">
                 <Grid>
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*" />
@@ -88,7 +88,7 @@
 
                 <Border Grid.Column="0"
                         Style="{DynamicResource Style.Card}"
-                        Padding="18">
+                        Padding="14">
                     <StackPanel>
                         <TextBlock Text="{loc:Loc tools.file_inspector}"
                                    Style="{DynamicResource Style.SectionLabel}" />
@@ -116,7 +116,7 @@
 
                 <Border Grid.Column="2"
                         Style="{DynamicResource Style.Card}"
-                        Padding="18">
+                        Padding="14">
                     <StackPanel>
                         <TextBlock Text="{loc:Loc tools.system_profile}"
                                    Style="{DynamicResource Style.SectionLabel}" />
@@ -154,7 +154,7 @@
                     <Border Background="{DynamicResource Brush.SurfaceSubtle}"
                             BorderBrush="{DynamicResource Brush.Border}"
                             BorderThickness="0,0,0,1"
-                            Padding="12">
+                            Padding="11">
                         <TextBlock Text="{loc:Loc tools.file_inspector}"
                                    Style="{DynamicResource Style.SectionLabel}" />
                     </Border>
