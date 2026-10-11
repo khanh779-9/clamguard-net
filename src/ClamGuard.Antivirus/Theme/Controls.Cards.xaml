@@ -48,7 +48,7 @@
     </Style>
 
     <Style x:Key="Style.SectionLabel" TargetType="TextBlock">
-        <Setter Property="FontSize" Value="9" />
+        <Setter Property="FontSize" Value="10" />
         <Setter Property="FontWeight" Value="SemiBold" />
         <Setter Property="Foreground" Value="{DynamicResource Brush.TextMuted}" />
         <Setter Property="TextWrapping" Value="Wrap" />
@@ -82,7 +82,7 @@
     </Style>
 
     <Style x:Key="Style.MetricLabel" TargetType="TextBlock">
-        <Setter Property="FontSize" Value="9.5" />
+        <Setter Property="FontSize" Value="10" />
         <Setter Property="Foreground" Value="{DynamicResource Brush.TextMuted}" />
         <Setter Property="TextWrapping" Value="Wrap" />
     </Style>

@@ -34,7 +34,7 @@ public sealed class ActiveTaskItem : INotifyPropertyChanged
     public string Target { get; }
     public DateTimeOffset StartedAt { get; }
     public bool IsCancellable => _isCancellable && !_cancelled;
-    public bool IsScan => Kind is "ScanFile" or "ScanFolder";
+    public bool IsScan => Kind is "ScanFile" or "ScanFolder" or "ScanPaths" or "MemoryScan" or "StartupScan";
 
     internal CancellationToken Token => _cts.Token;
 

@@ -163,6 +163,9 @@ public sealed partial class MainViewModel : INotifyPropertyChanged
     public ObservableCollection<QuarantineItem> QuarantineItems { get; } = [];
 
     public bool IsBusy => _tracker.HasActiveTasks;
+    public int ActiveTaskCount => _tracker.ActiveTasks.Count;
+    public string ActiveTasksHeaderText
+        => $"{LocalizationService.Instance.Get("scan.active_tasks")} · {ActiveTaskCount}";
     public bool IsSystemBusy { get => _isSystemBusy; private set => SetField(ref _isSystemBusy, value); }
     public string StatusTitle { get => _statusTitle; private set => SetField(ref _statusTitle, value); }
     public string StatusDescription { get => _statusDescription; private set => SetField(ref _statusDescription, value); }
@@ -310,6 +313,8 @@ public sealed partial class MainViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(IsBusy));
         OnPropertyChanged(nameof(IsScanning));
         OnPropertyChanged(nameof(BusyStatusText));
+        OnPropertyChanged(nameof(ActiveTaskCount));
+        OnPropertyChanged(nameof(ActiveTasksHeaderText));
         CommandManager.InvalidateRequerySuggested();
     }
 

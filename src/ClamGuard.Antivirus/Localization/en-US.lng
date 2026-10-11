@@ -372,4 +372,5 @@ minimize=Minimize
 [tasks]
 initializing=Initializing
 apply_actions=Applying threat actions
+running=Running
 running_multi={0} actions running

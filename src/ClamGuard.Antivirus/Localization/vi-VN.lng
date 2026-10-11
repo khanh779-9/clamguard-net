@@ -374,4 +374,5 @@ minimize=Thu nhỏ
 [tasks]
 initializing=Đang khởi tạo
 apply_actions=Đang xử lý mối đe dọa
+running=Đang chạy
 running_multi={0} hành động đang chạy
