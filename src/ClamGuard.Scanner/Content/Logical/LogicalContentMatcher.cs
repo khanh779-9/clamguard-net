@@ -8,7 +8,7 @@ namespace ClamGuard.Scanner;
 /// </summary>
 internal static class LogicalContentMatcher
 {
-    internal static List<int> FindContentMatches(ContentSignature signature, ReadOnlySpan<byte> data, LdbScanContext context, int maxMatches, IReadOnlyDictionary<int, List<int>>? macroPositions = null, IReadOnlyList<int>? candidateStarts = null)
+    internal static List<int> FindContentMatches(ContentSignature signature, ReadOnlySpan<byte> data, LdbScanContext context, int maxMatches, IReadOnlyDictionary<int, List<int>>? macroPositions = null)
     {
         if (maxMatches <= 0 || data.IsEmpty)
             return [];
@@ -23,60 +23,6 @@ internal static class LogicalContentMatcher
         var ranges = LdbRuntime.ResolveOffset(signature.OffsetExpression, context, macroPositions: macroPositions);
         var results = new List<int>();
         var options = new PatternMatchOptions(signature.MatchOptions.HasFlag(ContentMatchOptions.IgnoreCase), signature.MatchOptions.HasFlag(ContentMatchOptions.FullWord));
-
-        // Shared-anchor hints: candidate starts were reported by the subsig
-        // anchor automaton in one shared scan. For FIXED patterns the anchor IS
-        // the whole pattern, so the AC match already verified every byte and the
-        // candidates are exact match positions (no re-verification needed). For
-        // wildcard patterns the anchor is a necessary condition, and an EMPTY
-        // candidate list is a definitive "cannot match" — both must
-        // short-circuit instead of falling back to the full-file scan.
-        // Verification for wildcard patterns remains fully authoritative;
-        // positions outside every resolved range are discarded.
-        if (candidateStarts is not null)
-        {
-            foreach (var candidate in candidateStarts)
-            {
-                if (candidate < 0 || candidate >= data.Length)
-                    continue;
-                foreach (var range in ranges)
-                {
-                    var start = Math.Clamp(range.Start, 0, data.Length);
-                    if (start >= data.Length)
-                        continue;
-                    var end = Math.Clamp(range.EndInclusive, start, data.Length - 1);
-                    var maxBound = Math.Min(range.MaxBound, data.Length);
-                    if (candidate < start || candidate > end)
-                        continue;
-
-                    foreach (var pattern in patterns)
-                    {
-                        var patternMinLen = Math.Max(1, pattern.MinLength);
-                        var last = pattern.MaxLength == int.MaxValue ? end : Math.Min(end, data.Length - patternMinLen);
-                        if (candidate > last)
-                            continue;
-                        if (!pattern.IsFixed)
-                        {
-                            if (!pattern.Matches(data, candidate, out var consumed, options))
-                                continue;
-                            if (consumed <= 0 || (long)candidate + consumed > maxBound)
-                                continue;
-                        }
-                        else if ((long)candidate + pattern.MinLength > maxBound)
-                        {
-                            continue;
-                        }
-
-                        results.Add(candidate);
-                        if (results.Count >= maxMatches)
-                            return results;
-                    }
-                }
-            }
-
-            return results;
-        }
-
         foreach (var range in ranges)
         {
             var start = Math.Clamp(range.Start, 0, data.Length);

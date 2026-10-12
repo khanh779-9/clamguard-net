@@ -57,6 +57,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged
     public MainViewModel(AntivirusEngineService engine)
     {
         _engine = engine;
+        DatabasePath = _engine.DatabaseDirectory;
         _memoryScan = new MemoryScanService((data, label, ct) => _engine.ScanMemoryBufferAsync(data, label, ct));
         RefreshLocalizedUi();
         LocalizationService.Instance.LanguageChanged += (_, _) => RefreshLocalizedUi();

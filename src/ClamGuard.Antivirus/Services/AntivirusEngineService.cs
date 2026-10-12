@@ -247,8 +247,6 @@ public sealed class AntivirusEngineService : IAsyncDisposable
                     if (isLink && !options.FollowSymlinks) continue;
                     if (options.IsExcludedExtension(entry)) continue;
                     files.Add(Path.GetFullPath(entry));
-                    if (files.Count > options.MaxFiles)
-                        return (files.Take(options.MaxFiles).ToArray(), true, DistinctPaths(errors, pathComparer));
                 }
             }
             catch (UnauthorizedAccessException) { errors.Add(current); }

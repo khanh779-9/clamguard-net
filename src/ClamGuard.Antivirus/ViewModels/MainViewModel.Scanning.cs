@@ -110,7 +110,7 @@ public sealed partial class MainViewModel
             SetProtectionStatus();
             RefreshQuarantine();
         }
-        catch (Exception ex) when (ex is IOException or InvalidDataException or FormatException or UnauthorizedAccessException)
+        catch (Exception ex)
         {
             DatabaseReady = false;
             StatusTitle = LocalizationService.Instance.Get("nav.not_ready");

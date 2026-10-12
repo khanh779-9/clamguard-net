@@ -68,57 +68,6 @@ public sealed class HexPattern
     }
 
     /// <summary>
-    /// Returns all maximal exact-byte runs of at least <paramref name="minLength"/>,
-    /// longest first. A candidate match of the whole pattern must contain every
-    /// run at its recorded offset, so two runs form a strong positional filter.
-    /// </summary>
-    public bool TryGetSearchRuns(out List<(int Offset, byte[] Bytes)> runs, int minLength)
-    {
-        runs = [];
-        if (_fixedBytes is not null)
-        {
-            if (_fixedBytes.Length >= minLength)
-                runs.Add((0, (byte[])_fixedBytes.Clone()));
-            return runs.Count != 0;
-        }
-
-        var prefixFixedLength = true;
-        var byteOffset = 0;
-        var runStartAtom = 0;
-        var runStartByte = 0;
-        var runLength = 0;
-        var atoms = GetAtoms();
-        for (var i = 0; i < atoms.Length; i++)
-        {
-            if (atoms[i] is ExactByteAtom)
-            {
-                if (runLength == 0)
-                {
-                    runStartAtom = i;
-                    runStartByte = byteOffset;
-                }
-                runLength++;
-                byteOffset++;
-                continue;
-            }
-
-            if (runLength >= minLength && prefixFixedLength)
-                runs.Add((runStartByte, Enumerable.Range(runStartAtom, runLength).Select(a => ((ExactByteAtom)atoms[a]).Value).ToArray()));
-
-            runLength = 0;
-            if (atoms[i].MinLength != atoms[i].MaxLength)
-                prefixFixedLength = false;
-            byteOffset += atoms[i].MinLength;
-        }
-
-        if (runLength >= minLength && prefixFixedLength)
-            runs.Add((runStartByte, Enumerable.Range(runStartAtom, runLength).Select(a => ((ExactByteAtom)atoms[a]).Value).ToArray()));
-
-        runs = runs.OrderByDescending(r => r.Bytes.Length).ToList();
-        return runs.Count != 0;
-    }
-
-    /// <summary>
     /// Returns fixed bytes for exact patterns, or the longest fixed-byte run
     /// (together with its byte offset inside the pattern) for flexible patterns.
     /// A candidate match of the whole pattern can only start at

@@ -9,9 +9,9 @@
             <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
             <StackPanel Margin="0,0,16,0"><TextBlock Text="{loc:Loc quarantine.title}" Style="{DynamicResource Style.SectionLabel}" /><TextBlock Text="{loc:Loc quarantine.empty}" Margin="0,4,0,0" Style="{DynamicResource Style.CardTitle}" /></StackPanel>
             <WrapPanel Grid.Column="1" HorizontalAlignment="Right">
-                <Button Command="{Binding RestoreSelectedQuarantineCommand}" Style="{DynamicResource Style.ButtonSecondary}" Height="32" Padding="11,5" Margin="0,0,8,0"><TextBlock Text="{loc:Loc quarantine.restore}" /></Button>
-                <Button Command="{Binding DeleteSelectedQuarantineCommand}" Style="{DynamicResource Style.ButtonSecondary}" Height="32" Padding="11,5" Margin="0,0,8,0"><TextBlock Text="{loc:Loc quarantine.delete}" /></Button>
-                <Button Command="{Binding RefreshQuarantineCommand}" Style="{DynamicResource Style.ButtonSecondary}" Height="32" Padding="11,5"><TextBlock Text="{loc:Loc system.refresh}" /></Button>
+                <Button Command="{Binding RestoreSelectedQuarantineCommand}" Style="{DynamicResource Style.ButtonSecondary}" Height="32" Padding="14,6" Margin="0,0,8,0"><TextBlock Text="{loc:Loc quarantine.restore}" /></Button>
+                <Button Command="{Binding DeleteSelectedQuarantineCommand}" Style="{DynamicResource Style.ButtonSecondary}" Height="32" Padding="14,6" Margin="0,0,8,0"><TextBlock Text="{loc:Loc quarantine.delete}" /></Button>
+                <Button Command="{Binding RefreshQuarantineCommand}" Style="{DynamicResource Style.ButtonSecondary}" Height="32" Padding="14,6"><TextBlock Text="{loc:Loc system.refresh}" /></Button>
             </WrapPanel>
         </Grid>
 

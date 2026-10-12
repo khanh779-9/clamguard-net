@@ -20,7 +20,7 @@
                         <Border x:Name="Chrome" Background="{TemplateBinding Background}"
                                 BorderBrush="{TemplateBinding BorderBrush}"
                                 BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="6">
-                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="2" />
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="{TemplateBinding Padding}" />
                         </Border>
                         <Border x:Name="FocusRing" Margin="-2" BorderBrush="Transparent"
                                 BorderThickness="2" CornerRadius="8" IsHitTestVisible="False" />
@@ -54,7 +54,7 @@
                                 BorderBrush="{TemplateBinding BorderBrush}"
                                 BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="6">
                             <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
-                                              VerticalAlignment="Center" Margin="2" />
+                                              VerticalAlignment="Center" Margin="{TemplateBinding Padding}" />
                         </Border>
                         <Border x:Name="FocusRing" Margin="-2" BorderBrush="Transparent"
                                 BorderThickness="2" CornerRadius="8" IsHitTestVisible="False" />
