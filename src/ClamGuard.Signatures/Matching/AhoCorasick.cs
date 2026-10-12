@@ -1,4 +1,4 @@
-using System.Runtime.CompilerServices;
+﻿using System.Runtime.CompilerServices;
 
 namespace ClamGuard.Signatures.Matching;
 
@@ -14,6 +14,18 @@ namespace ClamGuard.Signatures.Matching;
 /// </summary>
 public sealed class AhoCorasickMatcher
 {
+    private readonly bool _caseInsensitive;
+
+    /// <summary>
+    /// When set, input bytes are case-folded (A-Z lowered) during scanning and
+    /// registered anchors are expected to be pre-folded, enabling nocase
+    /// signature anchors (ClamAV cli_ac_addsig case handling).
+    /// </summary>
+    public AhoCorasickMatcher(bool caseInsensitive = false)
+    {
+        _caseInsensitive = caseInsensitive;
+    }
+
     private struct Node
     {
         public int FirstEdge;
@@ -68,7 +80,7 @@ public sealed class AhoCorasickMatcher
     /// <summary>
     /// Controls the maximum number of states that receive a dense int[256]
     /// transition table. Higher values trade RAM for speed. With ClamAV-sized
-    /// databases the trie typically has 500K–2M states; flattening the first
+    /// databases the trie typically has 500Kâ€“2M states; flattening the first
     /// 8192 (32 MiB) covers the busiest part of the automaton.
     /// </summary>
     private const int MaxDenseStates = 8192;
@@ -172,7 +184,7 @@ public sealed class AhoCorasickMatcher
         _denseThreshold = Math.Min(stateCount, MaxDenseStates);
         if (_denseThreshold <= 1)
         {
-            // Only root – the root already has _rootTransitions.
+            // Only root â€“ the root already has _rootTransitions.
             _denseThreshold = 0;
             _denseTransitions = [];
             return;
@@ -220,7 +232,7 @@ public sealed class AhoCorasickMatcher
         var state = 0;
         for (var i = 0; i < data.Length; i++)
         {
-            state = AdvanceFrozen(state, data[i]);
+            state = AdvanceFrozen(state, FoldInput(data[i]));
             var outputState = state;
             while (outputState >= 0)
             {
@@ -248,7 +260,7 @@ public sealed class AhoCorasickMatcher
         var outputs = _frozenOutputs;
         for (var i = 0; i < data.Length; i++)
         {
-            state = AdvanceFrozen(state, data[i]);
+            state = AdvanceFrozen(state, FoldInput(data[i]));
             var outputState = state;
 
             while (outputState >= 0)
@@ -286,7 +298,7 @@ public sealed class AhoCorasickMatcher
         var outputs = _frozenOutputs;
         for (var i = 0; i < data.Length; i++)
         {
-            state = AdvanceFrozen(state, data[i]);
+            state = AdvanceFrozen(state, FoldInput(data[i]));
             var outputState = state;
 
             while (outputState >= 0)
@@ -330,6 +342,10 @@ public sealed class AhoCorasickMatcher
     /// <summary>
     /// O(1) for states in the dense-flattened region, O(degree) for deeper states.
     /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private byte FoldInput(byte value)
+        => _caseInsensitive && value is >= (byte)'A' and <= (byte)'Z' ? (byte)(value + 32) : value;
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private int FindTransitionFrozen(int state, byte value)
     {

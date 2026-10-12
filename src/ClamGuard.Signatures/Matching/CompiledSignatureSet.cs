@@ -18,7 +18,8 @@ public sealed partial class CompiledSignatureSet
     private readonly List<NdbSignature> _ndb = [];
     private readonly List<NdbSignature> _flexibleNdb = [];
     private readonly List<LogicalSignature> _logical = [];
-    private readonly LogicalSignaturePrefilter _logicalPrefilter;
+    public readonly LogicalSignaturePrefilter _logicalPrefilter;
+    private readonly SubsigAnchorIndex _subsigAnchors = new();
     private readonly List<MetadataSignature> _metadata = [];
     private sealed class HashBucket
     {
@@ -153,6 +154,7 @@ public sealed partial class CompiledSignatureSet
                 break;
             case LogicalSignature logical:
                 _logical.Add(logical);
+                _subsigAnchors.Add(logical);
                 break;
             case MetadataSignature metadata:
                 _metadata.Add(metadata);
@@ -219,6 +221,7 @@ public sealed partial class CompiledSignatureSet
             _contentAc.Build();
         }
         _logicalPrefilter.Build();
+        _subsigAnchors.Build();
 
         // Flexible (wildcard) signatures: index each pattern's longest fixed-byte
         // run in a dedicated automaton. Any whole-pattern match must contain the
@@ -307,7 +310,36 @@ public sealed partial class CompiledSignatureSet
     public HashSet<LogicalSignature> FindLogicalCandidates(ReadOnlySpan<byte> data)
     {
         Build();
-        return _logicalPrefilter.FindCandidates(data);
+        var candidates = _logicalPrefilter.FindCandidates(data);
+        if (candidates.Count == 0)
+            return candidates;
+
+        // Confirm each surviving rule's anchor really occurs in the byte layer
+        // using the shared subsig-anchor positions (one AC scan, reused by the
+        // logical evaluator's candidate hints). A rule whose required subsig
+        // anchor is absent cannot match and is dropped here.
+        var positions = _subsigAnchors.FindPositions(data);
+        var confirmed = new HashSet<LogicalSignature>(ReferenceEqualityComparer.Instance);
+        foreach (var candidate in candidates)
+        {
+            var refs = _subsigAnchors.GetAnchors(candidate);
+            if (refs is null || refs.Count == 0)
+            {
+                confirmed.Add(candidate);
+                continue;
+            }
+
+            foreach (var reference in refs)
+            {
+                if (positions.TryGetValue(reference.AnchorId, out var anchorPositions) && anchorPositions.Count != 0)
+                {
+                    confirmed.Add(candidate);
+                    break;
+                }
+            }
+        }
+
+        return confirmed;
     }
 
     /// <summary>Indicates whether a logical signature is safe to reject on an anchor miss.</summary>
@@ -316,6 +348,16 @@ public sealed partial class CompiledSignatureSet
         ArgumentNullException.ThrowIfNull(signature);
         Build();
         return _logicalPrefilter.IsIndexed(signature);
+    }
+
+    /// <summary>Shared per-subsig anchor index (ClamAV-style AC over subsig literals).</summary>
+    public SubsigAnchorIndex SubsigAnchors
+    {
+        get
+        {
+            Build();
+            return _subsigAnchors;
+        }
     }
 
     public IReadOnlyList<Detection> Match(

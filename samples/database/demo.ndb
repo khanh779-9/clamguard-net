@@ -1,2 +1,0 @@
-# Detect the ASCII string "malware" at byte offset 0.
-Demo.NDB:0:0:6d616c77617265

@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Buffers;
 using System.Collections.Concurrent;
 using System.Buffers.Binary;
@@ -17,6 +17,16 @@ using ClamGuard.Yara;
 using ClamGuard.Bytecode;
 
 namespace ClamGuard.Scanner;
+
+public static class LogicalContentMatcherDiagnostics
+{
+    public static long Subsigs;
+    public static long Hinted;
+    public static long Unhinted;
+    public static void Reset() { Subsigs = Hinted = Unhinted = 0; }
+    public static string Report() => $"[diag-hints] subsigs={Subsigs:N0} hinted={Hinted:N0} unhinted={Unhinted:N0}";
+}
+
 public sealed partial class ScannerEngine
 {
     internal static ScanResult ScanBuffer(byte[] buffer, int length, CompiledState state, ScanOptions options, string path, CancellationToken cancellationToken)
@@ -250,10 +260,92 @@ public sealed partial class ScannerEngine
                 (signature.Target?.MaxFileSize is null || dataLength <= signature.Target.MaxFileSize.Value))
             .ToArray();
         var logicalCandidates = scanState?.Compiled.FindLogicalCandidates(data);
+        // One shared subsig-anchor scan per evaluated byte layer: candidate
+        // positions for every indexed content subsignature come from a single
+        // Aho-Corasick pass instead of a full-file scan per subsignature.
+        Dictionary<int, List<int>>? sharedAnchorPositions = null;
+        SubsigAnchorIndex? subsigIndexRef = null;
+        if (scanState is not null && parentTypes.Count == 0 && !retyped)
+        {
+            subsigIndexRef = scanState.Compiled.SubsigAnchors;
+            if (!subsigIndexRef.IsEmpty)
+                sharedAnchorPositions = subsigIndexRef.FindPositions(data);
+        }
         bool CanStillMatch(LogicalSignature signature)
             => logicalCandidates is null || scanState is null ||
                !scanState.Compiled.IsLogicalSignaturePrefiltered(signature) ||
                logicalCandidates.Contains(signature);
+
+        IReadOnlyList<int>? BuildCandidateStarts(LogicalSignature signature, int subsigIdx)
+        {
+            if (sharedAnchorPositions is null || subsigIndexRef is null)
+                return null;
+            var refs = subsigIndexRef.GetAnchors(signature);
+            if (refs is null || refs.Count == 0)
+                return null;
+
+            // If this subsignature has registered runs, occurrence of the first
+            // run (and, when present, the second run at the recorded distance)
+            // is a necessary condition for a match. An empty result is a
+            // definitive reject â€” NOT a full-file fallback scan.
+            List<int>? candidates = null;
+            var hasAnchorForSubsig = false;
+            foreach (var reference in refs)
+            {
+                if (reference.SubsigIndex != subsigIdx)
+                    continue;
+                hasAnchorForSubsig = true;
+
+                if (!sharedAnchorPositions.TryGetValue(reference.AnchorId, out var positions))
+                    continue;
+
+                if (reference.SecondAnchorId < 0)
+                {
+                    candidates ??= [];
+                    foreach (var position in positions)
+                    {
+                        var candidate = position - reference.AnchorOffset;
+                        if (candidate >= 0 && candidate < dataLength)
+                            candidates.Add(candidate);
+                    }
+
+                    continue;
+                }
+
+                // Two-run intersection: both runs must occur at the recorded distance.
+                if (!sharedAnchorPositions.TryGetValue(reference.SecondAnchorId, out var secondPositions))
+                    continue;
+
+                var secondary = new HashSet<int>();
+                foreach (var secondPosition in secondPositions)
+                    secondary.Add(secondPosition - reference.SecondAnchorDelta);
+
+                candidates ??= [];
+                foreach (var position in positions)
+                {
+                    var candidate = position - reference.AnchorOffset;
+                    if (candidate >= 0 && candidate < dataLength && secondary.Contains(candidate))
+                        candidates.Add(candidate);
+                }
+            }
+
+            if (!hasAnchorForSubsig)
+                return null;
+            if (candidates is null)
+                return [];
+
+            candidates.Sort();
+            var deduped = new List<int>(candidates.Count);
+            var previous = -1;
+            foreach (var candidate in candidates)
+            {
+                if (candidate != previous)
+                    deduped.Add(candidate);
+                previous = candidate;
+            }
+
+            return deduped;
+        }
 
         var activeSignatures = new List<LogicalSignature>(signatureArray.Length);
         foreach (var signature in signatureArray)
@@ -320,6 +412,31 @@ public sealed partial class ScannerEngine
             if (!LdbRuntime.MatchesTarget(target, context))
                 continue;
 
+            // Fast pre-check for pure-AND rules with indexed subsigs: when any
+            // required content subsignature has zero anchor positions in this
+            // byte layer, the rule cannot match â€” skip before any setup.
+            if (scanState is not null && sharedAnchorPositions is not null &&
+                subsigIndexRef is not null && normalized is null)
+            {
+                var ruleRefs = subsigIndexRef.GetAnchors(signature);
+                if (ruleRefs is not null)
+                {
+                    var allRequiredContentPresent = true;
+                    foreach (var reference in ruleRefs)
+                    {
+                        if (!sharedAnchorPositions.TryGetValue(reference.AnchorId, out var rulePositions) ||
+                            rulePositions.Count == 0)
+                        {
+                            allRequiredContentPresent = false;
+                            break;
+                        }
+                    }
+
+                    if (!allRequiredContentPresent && IsPureAndExpression(signature.Expression))
+                        continue;
+                }
+            }
+
             var indexMap = new Dictionary<int, ContentSignature>();
             foreach (var sub in signature.SubSignatures)
                 indexMap[GetSubsigIndex(sub)] = sub;
@@ -352,7 +469,16 @@ public sealed partial class ScannerEngine
                 cancellationToken.ThrowIfCancellationRequested();
                 var index = kv.Key;
                 var sub = kv.Value;
-                var hits = LogicalContentMatcher.FindContentMatches(sub, matchData, context, limits.MaxPatternMatchesPerSignature, macroPositions);
+                // Anchored candidates only apply to the un-normalized root layer;
+                // normalized (HTML/ASCII) targets re-scan the transformed buffer.
+                var hints = normalized is null ? BuildCandidateStarts(signature, index) : null;
+                if (scanOptions?.Verbose == true)
+                {
+                    System.Threading.Interlocked.Increment(ref LogicalContentMatcherDiagnostics.Subsigs);
+                    if (hints is not null) System.Threading.Interlocked.Increment(ref LogicalContentMatcherDiagnostics.Hinted);
+                    else System.Threading.Interlocked.Increment(ref LogicalContentMatcherDiagnostics.Unhinted);
+                }
+                var hits = LogicalContentMatcher.FindContentMatches(sub, matchData, context, limits.MaxPatternMatchesPerSignature, macroPositions, hints);
                 matches[index].Positions.AddRange(hits);
                 if (isPureAnd && hits.Count == 0)
                 {

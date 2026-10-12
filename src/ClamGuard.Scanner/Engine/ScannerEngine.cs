@@ -290,6 +290,7 @@ public sealed partial class ScannerEngine
             }
 
             (IReadOnlyList<Detection> Detections, bool Trusted, long BytesRead) rawMatch;
+            var __rawSw = Stopwatch.StartNew();
             if (fullData is not null)
             {
                 // The bytes are already in RAM. Re-reading them through a second disk stream / memory map
@@ -307,6 +308,7 @@ public sealed partial class ScannerEngine
                     targetGroup: SignatureTargetGroups.FromFileType(signatureFileType)),
                     state.Compiled.MatchesFalsePositive(fullData),
                     info.Length);
+                if (options.Verbose) System.Console.Error.WriteLine($"[phase] rawmatch {__rawSw.ElapsedMilliseconds} ms");
             }
             else
             {
@@ -379,13 +381,31 @@ public sealed partial class ScannerEngine
                     var groupToken = groupCts.Token;
 
                     var ndbTask = hasSignatureGroups && ndbGroupSigs.Length != 0
-                        ? Task.Run(() => EvaluateNdbBuffered(ndbGroupSigs, fullData, options.Limits, signatureFileType, groupToken, options), groupToken)
+                        ? Task.Run(() =>
+                        {
+                            var __t = Stopwatch.StartNew();
+                            var __r = EvaluateNdbBuffered(ndbGroupSigs, fullData, options.Limits, signatureFileType, groupToken, options);
+                            if (options.Verbose) System.Console.Error.WriteLine($"[phase] ndb {__t.ElapsedMilliseconds} ms ({ndbGroupSigs.Length} rules)");
+                            return __r;
+                        }, groupToken)
                         : null;
                     var logicalTask = hasSignatureGroups && logicalGroupSigs.Length != 0
-                        ? Task.Run(() => EvaluateLogicalBuffered(logicalGroupSigs, ndbSignatures, fullData, options.Limits, signatureFileType, state.Database.IconDatabase, groupToken, state, options), groupToken)
+                        ? Task.Run(() =>
+                        {
+                            var __t = Stopwatch.StartNew();
+                            var __r = EvaluateLogicalBuffered(logicalGroupSigs, ndbSignatures, fullData, options.Limits, signatureFileType, state.Database.IconDatabase, groupToken, state, options);
+                            if (options.Verbose) System.Console.Error.WriteLine($"[phase] logical {__t.ElapsedMilliseconds} ms ({logicalGroupSigs.Length} rules)");
+                            return __r;
+                        }, groupToken)
                         : null;
                     var peTask = peGroupActive
-                        ? Task.Run(() => PeSpecializedMatcher.Match(fullData, state, options.Limits, groupToken), groupToken)
+                        ? Task.Run(() =>
+                        {
+                            var __t = Stopwatch.StartNew();
+                            var __r = PeSpecializedMatcher.Match(fullData, state, options.Limits, groupToken);
+                            if (options.Verbose) System.Console.Error.WriteLine($"[phase] pe-specialized {__t.ElapsedMilliseconds} ms");
+                            return __r;
+                        }, groupToken)
                         : null;
 
                     IReadOnlyList<Detection> ndbResult = [];
