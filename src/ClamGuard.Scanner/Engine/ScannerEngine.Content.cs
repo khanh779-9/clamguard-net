@@ -30,7 +30,7 @@ public sealed partial class ScannerEngine
             if (!options.CollectAllMatches && options.HasBlockingDetections(detections))
                 return CreateDetectionResult(path, fileType, detections, length, TimeSpan.Zero, state.Database.Databases.FirstOrDefault(), options);
         }
-        var ndb = state.Database.Signatures.OfType<NdbSignature>().ToArray();
+        var ndb = state.Database.NdbSignatures;
         var applicableRawNdb = ndb
             .Where(x => x.MacroGroup is null && LdbRuntime.TargetMatchesFileType(x.Target, fileType))
             .ToArray();
@@ -65,15 +65,15 @@ public sealed partial class ScannerEngine
             fileType,
             cancellationToken,
             scanOptions: options));
-        detections.AddRange(EvaluateLogical(state.Database.Signatures.OfType<LogicalSignature>(), ndb, data, options.Limits, fileType, state.Database.IconDatabase, [], cancellationToken, scanState: state, scanOptions: options));
+        detections.AddRange(EvaluateLogical(state.Database.LogicalSignatures, ndb, data, options.Limits, fileType, state.Database.IconDatabase, [], cancellationToken, scanState: state, scanOptions: options));
         if (options.ScanPE && ScanTypePolicy.IsPe(fileType))
             detections.AddRange(PeSpecializedMatcher.Match(data, state, options.Limits, cancellationToken));
         foreach (var contentScanner in options.ContentScanners)
             detections.AddRange(contentScanner.Scan(data, path, cancellationToken));
         if (options.ScanPE && ScanTypePolicy.IsPe(fileType))
-            detections.AddRange(PeOverlayScanner.ScanPeOverlay(data.ToArray(), state, options, cancellationToken));
+            detections.AddRange(PeOverlayScanner.ScanPeOverlay(data, state, options, cancellationToken));
         if (ScanTypePolicy.IsMachO(fileType) && ScanTypePolicy.LooksLikeMachOFat(data))
-            detections.AddRange(ScanMachOFatSlices(buffer, length, state, options, cancellationToken));
+            detections.AddRange(ScanMachOFatSlices(data, state, options, cancellationToken));
         if (ScanTypePolicy.IsArchiveContainer(fileType) && ScanTypePolicy.ShouldParseContainer(fileType, options))
             detections.AddRange(ArchiveScanner.Scan(data, path, state, options, [], 0, cancellationToken));
         var trusted = state.Compiled.MatchesFalsePositive(data);
@@ -81,32 +81,23 @@ public sealed partial class ScannerEngine
     }
 
     private static IReadOnlyList<Detection> ScanMachOFatSlices(
-        byte[] data,
-        CompiledState state,
-        ScanOptions options,
-        CancellationToken cancellationToken)
-        => ScanMachOFatSlices(data, data.Length, state, options, cancellationToken);
-
-    private static IReadOnlyList<Detection> ScanMachOFatSlices(
-        byte[] data,
-        int length,
+        ReadOnlySpan<byte> whole,
         CompiledState state,
         ScanOptions options,
         CancellationToken cancellationToken)
     {
-        if (length <= 0) return [];
-        var whole = data.AsSpan(0, length);
+        if (whole.Length <= 0) return [];
         var slices = LdbRuntime.GetMachOFatSlices(whole);
         if (slices.Count == 0) return [];
 
         var results = new List<Detection>();
-        var ndb = state.Database.Signatures.OfType<NdbSignature>().ToArray();
-        var logical = state.Database.Signatures.OfType<LogicalSignature>().ToArray();
+        var ndb = state.Database.NdbSignatures;
+        var logical = state.Database.LogicalSignatures;
 
         foreach (var (offset, sliceLength) in slices)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var slice = data.AsSpan(offset, sliceLength);
+            var slice = whole.Slice(offset, sliceLength);
             if (state.Compiled.MatchesFalsePositive(slice))
                 continue;
             var type = DetectType(slice, "embedded.macho", state.Database.SpecialDatabases.FileTypes);
@@ -262,6 +253,9 @@ public sealed partial class ScannerEngine
             if (CanStillMatch(signature))
                 activeSignatures.Add(signature);
         }
+
+        if (activeSignatures.Count == 0)
+            return results;
 
         // Only compute macro groups required by LDB rules that survived the
         // mandatory-anchor prefilter (or are not safely indexable). Scanning every

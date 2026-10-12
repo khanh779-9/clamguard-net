@@ -159,6 +159,14 @@ public sealed class AhoCorasickMatcher
         _frozenEdges = _edges.ToArray();
         _frozenOutputs = _outputs.ToArray();
 
+        // Release build-time mutable lists so memory is not held twice
+        _nodes.Clear();
+        _nodes.TrimExcess();
+        _edges.Clear();
+        _edges.TrimExcess();
+        _outputs.Clear();
+        _outputs.TrimExcess();
+
         // Build DFA-flattened dense transition tables for the first N states.
         // This eliminates edge-list traversal for the most-visited trie nodes.
         BuildDenseTransitions();

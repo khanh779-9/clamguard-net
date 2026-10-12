@@ -126,24 +126,46 @@ public sealed class AntivirusEngineService : IAsyncDisposable
         if (scanOptions.Verbose)
             System.Diagnostics.Trace.WriteLine($"[ClamGuard] Directory enumeration complete: {total} file(s)");
 
+        var maxParallelism = scanOptions.UseMultithreading
+            ? Math.Clamp(scanOptions.MaxThreads, 1, Math.Min(Environment.ProcessorCount, 4))
+            : 1;
+
         var parallelOptions = new ParallelOptions
         {
             CancellationToken = cancellationToken,
-            MaxDegreeOfParallelism = scanOptions.UseMultithreading ? scanOptions.MaxThreads : 1
+            MaxDegreeOfParallelism = maxParallelism
         };
 
-        await Parallel.ForEachAsync(files, parallelOptions, async (file, ct) =>
+        try
         {
-            var result = await ScanFileAsync(file, scanOptions, ct).ConfigureAwait(false);
-            results.Add(result);
-            var currentCompleted = Interlocked.Increment(ref completed);
-            var includeResult = !scanOptions.InfectedOnly ||
-                result.Verdict is ScanVerdict.Malicious or ScanVerdict.PotentiallyUnwanted or ScanVerdict.StrongIndicator or ScanVerdict.Error or ScanVerdict.Timeout;
-            if (scanOptions.ShowProgress)
-                progress?.Report(new ScanProgress(file, currentCompleted, total, includeResult ? result : null));
-            if (scanOptions.Verbose)
-                System.Diagnostics.Trace.WriteLine($"[ClamGuard] {result.Verdict}: {file} ({result.Duration.TotalMilliseconds:F0} ms)");
-        }).ConfigureAwait(false);
+            await Parallel.ForEachAsync(files, parallelOptions, async (file, ct) =>
+            {
+                var result = await ScanFileAsync(file, scanOptions, ct).ConfigureAwait(false);
+                results.Add(result);
+                var currentCompleted = Interlocked.Increment(ref completed);
+                var includeResult = !scanOptions.InfectedOnly ||
+                    result.Verdict is ScanVerdict.Malicious or ScanVerdict.PotentiallyUnwanted or ScanVerdict.StrongIndicator or ScanVerdict.Error or ScanVerdict.Timeout;
+                if (scanOptions.ShowProgress)
+                    progress?.Report(new ScanProgress(file, currentCompleted, total, includeResult ? result : null));
+                if (scanOptions.Verbose)
+                    System.Diagnostics.Trace.WriteLine($"[ClamGuard] {result.Verdict}: {file} ({result.Duration.TotalMilliseconds:F0} ms)");
+            }).ConfigureAwait(false);
+        }
+        finally
+        {
+            GC.Collect(2, GCCollectionMode.Aggressive, blocking: false);
+            if (OperatingSystem.IsWindows())
+            {
+                try
+                {
+                    EmptyWorkingSet(System.Diagnostics.Process.GetCurrentProcess().Handle);
+                }
+                catch
+                {
+                    // Non-critical optimization
+                }
+            }
+        }
 
         foreach (var inaccessiblePath in enumeration.Errors)
         {
@@ -305,4 +327,7 @@ public sealed class AntivirusEngineService : IAsyncDisposable
     {
         await _host.DisposeAsync().ConfigureAwait(false);
     }
+
+    [System.Runtime.InteropServices.DllImport("psapi.dll", SetLastError = true)]
+    private static extern bool EmptyWorkingSet(nint hProcess);
 }

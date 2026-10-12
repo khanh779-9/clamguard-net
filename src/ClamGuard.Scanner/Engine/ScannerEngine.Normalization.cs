@@ -33,8 +33,8 @@ public sealed partial class ScannerEngine
             return [];
 
         var results = new List<Detection>();
-        var ndb = state.Database.Signatures.OfType<NdbSignature>().ToArray();
-        var logical = state.Database.Signatures.OfType<LogicalSignature>().ToArray();
+        var ndb = state.Database.NdbSignatures;
+        var logical = state.Database.LogicalSignatures;
 
         // cli_magic_scan() performs the ordinary compiled/raw matcher again on
         // the retyped fmap before/alongside its type-specific scanners.
@@ -77,13 +77,13 @@ public sealed partial class ScannerEngine
         if (options.ScanPE && (handlerType.Equals("PE", StringComparison.OrdinalIgnoreCase) ||
             handlerType.Equals("MSEXE", StringComparison.OrdinalIgnoreCase)))
         {
-            results.AddRange(PeOverlayScanner.ScanPeOverlay(data.ToArray(), state, options, cancellationToken));
+            results.AddRange(PeOverlayScanner.ScanPeOverlay(data, state, options, cancellationToken));
         }
 
         if (handlerType.Equals("MACH-O", StringComparison.OrdinalIgnoreCase) ||
             handlerType.Equals("MACHO_UNIBIN", StringComparison.OrdinalIgnoreCase))
         {
-            results.AddRange(ScanMachOFatSlices(data.ToArray(), state, options, cancellationToken));
+            results.AddRange(ScanMachOFatSlices(data, state, options, cancellationToken));
         }
 
         // Archive/document handlers are dispatched only for the active handler

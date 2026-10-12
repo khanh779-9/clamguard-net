@@ -37,9 +37,26 @@ public sealed class DatabaseManager
 
         // Reclaim transient string parsing and intermediate object allocations from the loader
         GC.Collect(2, GCCollectionMode.Aggressive, blocking: true, compacting: true);
+        GC.WaitForPendingFinalizers();
+
+        // Release committed pages of transient parsing memory back to Windows OS
+        if (OperatingSystem.IsWindows())
+        {
+            try
+            {
+                EmptyWorkingSet(System.Diagnostics.Process.GetCurrentProcess().Handle);
+            }
+            catch
+            {
+                // Non-critical optimization
+            }
+        }
 
         return next;
     }
+
+    [System.Runtime.InteropServices.DllImport("psapi.dll", SetLastError = true)]
+    private static extern bool EmptyWorkingSet(nint hProcess);
 }
 
 public sealed record CompiledState(
