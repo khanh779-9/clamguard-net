@@ -1,63 +1,63 @@
-# 📚 Documentation — ClamGuard.NET
+# Documentation — ClamGuard.NET
 
-Thư mục này chứa **tài liệu phân tích và đặc tả** của dự án. Tất cả tài liệu viết bằng
-**Markdown (CommonMark + GFM)**, tiếng Việt, đặt ngay trong thư mục này.
+This folder contains the project's **analysis and specification documents**. All documents are
+written in English, using Markdown (CommonMark + GFM), and live directly in this folder.
 
-## Danh mục tài liệu
+## Document index
 
-### Đặc tả định dạng
+### Format specification
 
-| Tài liệu | Nội dung |
-|----------|----------|
-| [`daily_CVD_Signature_Format_Analysis.md`](./daily_CVD_Signature_Format_Analysis.md) | Đặc tả định dạng `daily.cvd` — container CVD, 23 file DB con, cú pháp từng loại chữ ký (hash, NDB, LDB, CDB, IDB, CRB, FTM, phishing, DCONF…), bẫy từ dữ liệu thật, hướng dẫn triển khai C#, kế hoạch kiểm thử. Gộp từ 2 bản phân tích độc lập + đối chiếu source ClamAV 1.5.4. |
+| Document | Content |
+|----------|---------|
+| [`daily_CVD_Signature_Format_Analysis.md`](./daily_CVD_Signature_Format_Analysis.md) | Specification of the `daily.cvd` format: the CVD container, its 23 database files, the syntax of every signature family (hash, NDB, LDB, CDB, IDB, CRB, FTM, phishing, DCONF...), pitfalls found in real data, C# implementation guidance and a test plan. Merged from two independent analyses and cross-checked against the ClamAV 1.5.4 sources. |
 
-### Kiến trúc từng project
+### Per-project architecture
 
-| Tài liệu | Project | Nội dung |
-|----------|---------|----------|
-| [`project-ClamGuard.Core.md`](./project-ClamGuard.Core.md) | `ClamGuard.Core` | Nền tảng chung: hex codec, model domain (ScanOptions/ScanLimits/Detection/ScanResult), chính sách lọc PUA/heuristic, giới hạn quét. |
-| [`project-ClamGuard.Signatures.md`](./project-ClamGuard.Signatures.md) | `ClamGuard.Signatures` | Parse chữ ký ClamAV (.hdb/.ndb/.ldb/.cdb/.idb/…) + engine matching: Aho-Corasick, BMH, hex pattern, prefilter logical, compiled set streaming. |
-| [`project-ClamGuard.Scanner.md`](./project-ClamGuard.Scanner.md) | `ClamGuard.Scanner` | Pipeline quét: file-type detection, archive/container, PE, image fuzzy hash, logical runtime, ScanHost hosting. |
-| [`project-ClamGuard.Database.md`](./project-ClamGuard.Database.md) | `ClamGuard.Database` | Nạp CVD/CLD, đặc thù DB, ignore-list, DCONF, verify chữ ký (RSA-PSS/CMS), update CDIFF. |
-| [`project-ClamGuard.Bytecode.md`](./project-ClamGuard.Bytecode.md) | `ClamGuard.Bytecode` | Máy ảo bytecode ClamAV (.cbc): parser định dạng, VM có fuel/depth/runtime caps, API layer. |
-| [`project-ClamGuard.Yara.md`](./project-ClamGuard.Yara.md) | `ClamGuard.Yara` | Emulator subset YARA (strings + conditions cơ bản), cơ chế warning cho construct chưa hỗ trợ. |
-| [`project-ClamGuard.Antivirus.md`](./project-ClamGuard.Antivirus.md) | `ClamGuard.Antivirus` | Ứng dụng WPF: MVVM, services (engine, realtime, quarantine, memory scan, settings), i18n, theme, toolkit. |
+| Document | Project | Content |
+|----------|---------|---------|
+| [`project-ClamGuard.Core.md`](./project-ClamGuard.Core.md) | `ClamGuard.Core` | Shared foundation: hex codec, domain models (ScanOptions/ScanLimits/Detection/ScanResult), PUA/heuristic filtering policy, scan limits. |
+| [`project-ClamGuard.Signatures.md`](./project-ClamGuard.Signatures.md) | `ClamGuard.Signatures` | ClamAV signature parsing (.hdb/.ndb/.ldb/.cdb/.idb/...) plus the matching engine: Aho-Corasick, BMH, hex patterns, logical prefilter, streaming compiled set. |
+| [`project-ClamGuard.Scanner.md`](./project-ClamGuard.Scanner.md) | `ClamGuard.Scanner` | The scan pipeline: file-type detection, archives/containers, PE, image fuzzy hashing, logical runtime, ScanHost hosting. |
+| [`project-ClamGuard.Database.md`](./project-ClamGuard.Database.md) | `ClamGuard.Database` | CVD/CLD loading, special databases, ignore lists, DCONF, signature verification (RSA-PSS/CMS), CDIFF updates. |
+| [`project-ClamGuard.Bytecode.md`](./project-ClamGuard.Bytecode.md) | `ClamGuard.Bytecode` | The ClamAV bytecode (.cbc) virtual machine: format parser, VM with fuel/depth/runtime caps, API layer. |
+| [`project-ClamGuard.Yara.md`](./project-ClamGuard.Yara.md) | `ClamGuard.Yara` | YARA subset emulator (basic strings + conditions) with explicit warnings for unsupported constructs. |
+| [`project-ClamGuard.Antivirus.md`](./project-ClamGuard.Antivirus.md) | `ClamGuard.Antivirus` | The WPF application: MVVM, services (engine, realtime, quarantine, memory scan, settings), i18n, theming, toolkit. |
 
-## Tài liệu tham chiếu ngoài thư mục
+## External references
 
-- [`README.md`](../README.md) — tổng quan dự án, tính năng, cách build/chạy test.
-- Mã nguồn ClamAV 1.5.4 dùng để đối chiếu: bản cài đặt cục bộ (nếu có), hoặc
-  [github.com/Cisco-Talos/clamav](https://github.com/Cisco-Talos/clamav) tag tương ứng.
+- [`README.md`](../README.md) — project overview, features, build and test instructions.
+- ClamAV 1.5.4 sources used for cross-checking: local installation (if available) or the
+  [github.com/Cisco-Talos/clamav](https://github.com/Cisco-Talos/clamav) repository at the matching tag.
 
-## Quy ước viết tài liệu trong thư mục này
+## Documentation conventions
 
-Áp dụng cho mọi file `.md` thêm vào sau này:
+Applies to every `.md` file added to this folder:
 
-1. **Ngôn ngữ**: tiếng Việt; thuật ngữ kỹ thuật (class, format, CLI flag) giữ nguyên tiếng Anh.
-2. **Cấu trúc**: mỗi file có tiêu đề `#` duy nhất, mục lục khi dài hơn ~200 dòng,
-   đánh số mục bằng `##`.
-3. **Nhãn nguồn thông tin** khi tài liệu chứa kết quả phân tích/đo đạc:
+1. **Language**: English; keep technical terms (class names, formats, CLI flags) as-is.
+2. **Structure**: exactly one `#` title per file; add a table of contents when the file is
+   longer than ~200 lines; number sections with `##`.
+3. **Provenance labels** when a document reports measured or derived facts:
 
-   | Nhãn | Ý nghĩa |
-   |------|---------|
-   | 📏 Đo từ dữ liệu | Số liệu đo trực tiếp trên một đối tượng cụ thể (ghi rõ bản build/nguồn) |
-   | 📚 Tài liệu | Ngữ nghĩa theo tài liệu chính thức của dự án/thư viện |
-   | ✅ Đối chiếu source | Đã kiểm chứng trong mã nguồn gốc (ClamAV hoặc repo này) |
-   | 🛠️ ClamGuard | Phần đã hiện thực trong repo — trỏ tới file/class |
+   | Label | Meaning |
+   |-------|---------|
+   | `[measured]` | Counted directly on a specific object (state the build/source) |
+   | `[docs]` | Semantics taken from official project/library documentation |
+   | `[source]` | Verified directly in source code (ClamAV or this repository) |
+   | `[ClamGuard]` | Implemented in this repository — points to the file/class |
 
-4. **Code block** luôn khai báo ngôn ngữ: ```text cho sample record, ```csharp cho C#,
-   ```bash cho shell. Không dùng code block không có ngôn ngữ cho code thật.
-5. **Bảng**: dùng GFM table; cột số canh phải; đơn vị ghi trong tiêu đề cột.
-6. **Liên kết**: link tương đối giữa tài liệu trong thư mục; link tuyệt đối cho tài liệu ngoài.
-7. **Tên file**: `snake_case.md`, mô tả nội dung (tiền tố `project-` cho tài liệu kiến trúc),
-   không dùng khoảng trắng.
-8. **Cập nhật**: khi một tài liệu được thay thế bởi bản gộp/mới hơn, ghi rõ trạng thái
-   trong bảng danh mục ở file này; bản cũ bị xoá thay vì giữ song song.
+4. **Code blocks** always declare a language: ```text for sample records, ```csharp for C#,
+   ```bash for shell. Never leave a real code sample in a bare fenced block.
+5. **Tables**: GFM tables; right-align numeric columns; state units in the column header.
+6. **Links**: relative links between documents in this folder; absolute links for external docs.
+7. **File names**: `snake_case.md`, descriptive, prefixed `project-` for architecture documents,
+   no spaces.
+8. **Updates**: when a document is superseded by a merged/newer version, record the state
+   (Current / Archived) in the index above; delete superseded files instead of keeping duplicates.
 
-## Đóng góp nhanh
+## Quick contribution checklist
 
 ```bash
-# Build + chạy toàn bộ test trước khi commit tài liệu kèm code
+# Build and run the full test suite before committing docs that accompany code
 dotnet build ClamGuard.Net.sln -c Debug
 dotnet run --project tests/ClamGuard.Tests -c Debug --no-build
 ```

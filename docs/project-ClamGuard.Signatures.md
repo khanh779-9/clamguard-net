@@ -1,44 +1,43 @@
 # project-ClamGuard.Signatures
 
-> Parse toàn bộ định dạng chữ ký của ClamAV thành model có cấu trúc, rồi build thành các
-> **matcher đã biên dịch** (Aho-Corasick, Boyer-Moore-Horspool, hash buckets, prefilter logical)
-> chạy in-memory và streaming trên dữ liệu không đáng tin.
+> Parses every ClamAV signature format into structured models, then builds them into
+> **compiled matchers** (Aho-Corasick, Boyer-Moore-Horspool, hash buckets, logical prefilter)
+> that run in-memory and streaming over untrusted data.
 
 ---
 
-## 1. Thông tin project
+## 1. Project facts
 
-| Thuộc tính | Giá trị |
+| Property | Value |
 |---|---|
 | Target framework | `net8.0` |
 | Dependency | `ClamGuard.Core` |
-| Số file nguồn | 43 (Matching 7, Patterns 8, Parsing 11, Models 16, csproj) |
-| Định dạng parse | `.hdb/.hdu/.hsb/.hsu/.mdb/.mdu/.msb/.msu/.fp/.sfp/.ndb/.ndu/.ldb/.ldu/.cdb/.zmd/.rmd/.idb/.db/.ign/.ign2` |
+| Source files | 43 (Matching 7, Patterns 8, Parsing 11, Models 16, csproj) |
+| Formats parsed | `.hdb/.hdu/.hsb/.hsu/.mdb/.mdu/.msb/.msu/.fp/.sfp/.ndb/.ndu/.ldb/.ldu/.cdb/.zmd/.rmd/.idb/.db/.ign/.ign2` |
 
-## 2. Cấu trúc thư mục
+## 2. Layout
 
 ```text
 Parsing/
-  SignatureParser.cs            Facade điều phối theo extension
-  SignatureParserCommon.cs      Helpers dùng chung (algorithm theo độ dài hash, ParseInt/Size, Engine range)
-  Hash/HashSignatureParser.cs   .hdb/.hsb/.fp/.sfp/.mdb/.imp (size TRƯỚC hash cho mdb/msb)
-  Content/Ndb/NdbSignatureParser.cs     .ndb/.ndu/.sdb — validate offset (cli_caloff parity)
-  Content/Ldb/LdbSignatureParser.cs     .ldb/.ldu — split ';' an toàn, phân loại subsig
+  SignatureParser.cs            Facade dispatching by extension
+  SignatureParserCommon.cs      Shared helpers (algorithm by hash length, ParseInt/Size, Engine range)
+  Hash/HashSignatureParser.cs   .hdb/.hsb/.fp/.sfp/.mdb/.imp (size BEFORE hash for mdb/msb)
+  Content/Ndb/NdbSignatureParser.cs     .ndb/.ndu/.sdb — offset validation (cli_caloff parity)
+  Content/Ldb/LdbSignatureParser.cs     .ldb/.ldu — safe ';' splitting, subsig classification
   Content/Ldb/LdbSubsigParser.cs        hex::mods, PCRE, byte-compare, fuzzy_img, macro
-  Content/Ldb/LdbTargetParser.cs        TDB (Target/Engine/Container/FileSize/IconGroup…)
-  Content/Ndb/NdbSignatureParser.cs     macro group $n$, FLEVEL gate
-  Metadata/IdbSignatureParser.cs        .idb — 62-byte metric, bounds từng bước
-  Container/ContainerSignatureParser.cs .cdb/.zmd/.rmd — bug-for-bug với cli_loadmd/cli_loadcdb
+  Content/Ldb/LdbTargetParser.cs        TDB (Target/Engine/Container/FileSize/IconGroup...)
+  Metadata/IdbSignatureParser.cs        .idb — 62-byte metric, step-by-step bounds
+  Container/ContainerSignatureParser.cs .cdb/.zmd/.rmd — bug-for-bug with cli_loadmd/cli_loadcdb
 Patterns/
   PatternAtom.cs (+ ExactByte/MaskedByte/Gap/CharacterClass/Alternate)
-  HexPattern.cs                 Dual representation: fixed byte[] ↔ atoms; backtracking matcher
+  HexPattern.cs                 Dual representation: fixed byte[] <-> atoms; backtracking matcher
 Matching/
-  AhoCorasick.cs                Sparse trie → frozen arrays → dense int[256] cho 8192 state đầu
-  BoyerMooreHorspoolMatcher.cs  Fast path cho trường hợp đúng 1 fixed pattern
-  CompiledSignatureSet(.MatchHelpers).cs   Index tổng hợp + Match/MatchStreamAsync
-  LogicalSignaturePrefilter.cs  Fragment index (seed 4-byte balanced) cho logical thuần-AND
-  SignatureTargetGroups.cs      Mirror cli_mtargets[] của ClamAV 1.5.4 (15 matcher root)
-  ByteArrayContentComparer.cs   EqualityComparer<byte[]> cho digest (xxHash-based)
+  AhoCorasick.cs                Sparse trie -> frozen arrays -> dense int[256] for the first 8192 states
+  BoyerMooreHorspoolMatcher.cs  Fast path for the exactly-one-fixed-pattern case
+  CompiledSignatureSet(.MatchHelpers).cs   Aggregate index + Match/MatchStreamAsync
+  LogicalSignaturePrefilter.cs  Fragment index (seed 4-byte balanced) for pure-AND logical signatures
+  SignatureTargetGroups.cs      Mirror of cli_mtargets[] from ClamAV 1.5.4 (15 matcher roots)
+  ByteArrayContentComparer.cs   EqualityComparer<byte[]> for digests (xxHash-based)
 Models/
   Signature.cs, ContentSignature.cs, NdbSignature.cs, LogicalSignature.cs,
   HashSignature.cs, MetadataSignature.cs, CdbSignature.cs, LdbTargetDescription.cs,
@@ -47,30 +46,30 @@ Models/
   MetadataRange.cs, IconDatabase.cs
 ```
 
-📌 Ngữ nghĩa từng định dạng: xem [`daily_CVD_Signature_Format_Analysis.md`](./daily_CVD_Signature_Format_Analysis.md).
+Format semantics are specified in [`daily_CVD_Signature_Format_Analysis.md`](./daily_CVD_Signature_Format_Analysis.md).
 
 ---
 
-## 3. Luồng hoạt động
+## 3. Flow
 
 ### 3.1. Load & build
 
 ```text
-SignatureParser.ParseFile(path, flevel)        ← chọn parser theo extension
-        │  (lọc FLevel trước khi parse hex — tiết kiệm)
-        ▼
-IEnumerable<Signature>                         ← model bất biến, có SourceFile/SourceEntry
-        │  SignatureDatabase.Add/Compile()  (ở project Database)
-        ▼
-CompiledSignatureSet.Add(signature)            ← phân bổ vào cấu trúc phù hợp
-   ├─ fixed hex       → AhoCorasickMatcher theo target-group (NDB) hoặc content-AC
-   ├─ flexible hex    → flexible-AC theo anchor + danh sách _unanchored*
-   ├─ hash sigs       → hash bucket theo (algorithm, size?) — exact + wildcard
-   ├─ .fp/.sfp        → false-positive buckets
-   └─ logical         → LogicalSignaturePrefilter (seed-balanced fragment index)
-        │  Build()
-        ▼
-FROZEN: mảng đóng băng, dense transition tables, immutable state cho scan
+SignatureParser.ParseFile(path, flevel)        <- dispatches by extension
+        |  (FLevel gate runs before hex parsing — saves work)
+        v
+IEnumerable<Signature>                         <- immutable models with SourceFile/SourceEntry
+        |  SignatureDatabase.Add/Compile()  (in project Database)
+        v
+CompiledSignatureSet.Add(signature)            <- routed into the right structure
+   +- fixed hex       -> AhoCorasickMatcher per target-group (NDB) or content-AC
+   +- flexible hex    -> flexible-AC by anchor + the _unanchored* lists
+   +- hash sigs       -> hash buckets by (algorithm, size?) — exact + wildcard
+   +- .fp/.sfp        -> false-positive buckets
+   +- logical         -> LogicalSignaturePrefilter (seed-balanced fragment index)
+        |  Build()
+        v
+FROZEN: arrays frozen, dense transition tables, immutable state for scanning
 ```
 
 ### 3.2. Match (in-memory)
@@ -78,77 +77,78 @@ FROZEN: mảng đóng băng, dense transition tables, immutable state cho scan
 `Match(data, label, includeNdb, collectAllMatches, ndbFilter, ndbPatternCandidates,
 ndbCandidateFilter, targetGroup)`:
 
-1. **Target-group AC trước** (như `cli_scan_buff`), generic root sau.
-2. Mỗi hit đi qua: `hits` dedupe → NDB gate (`includeNdb` + `ndbFilter`) →
-   `OffsetAllows` (ngữ nghĩa `cli_caloff`: `N,M` = `[N, N+M]` inclusive; `EOF-n`; `*`) → thêm Detection.
-3. NDB bị filter loại → vẫn thêm vào `ndbPatternCandidates` để **EvaluateNdb có context**
-   (offset EP/SE/S/VI cần executable info) chạy ở tầng Scanner.
-4. Flexible content: candidate qua anchor AC → cap thu thập (4096/pattern, 65 536 tổng) →
-   verify theo thứ tự offset → first-match hoặc all-match.
-5. Hash buckets: chỉ hash algorithm có bucket; `.fp` khớp → toàn bộ layer thành **Trusted**.
+1. **Target-group AC first** (like `cli_scan_buff`), then the generic root.
+2. Each hit passes: `hits` dedupe -> NDB gate (`includeNdb` + `ndbFilter`) ->
+   `OffsetAllows` (`cli_caloff` semantics: `N,M` = `[N, N+M]` inclusive; `EOF-n`; `*`) -> Detection.
+3. An NDB rejected by the filter is still added to `ndbPatternCandidates` so the **context-aware
+   EvaluateNdb** pass (offsets EP/SE/S/VI need executable info) can run at the Scanner layer.
+4. Flexible content: candidates from the anchor AC -> collection caps (4096/pattern, 65,536 total)
+   -> verification in offset order -> first-match or all-match.
+5. Hash buckets: only hash algorithms that have buckets; a `.fp` hit turns the whole layer
+   into **Trusted**.
 
 ### 3.3. MatchStreamAsync (streaming)
 
-Chunked stream, **giữ state AC qua biên chunk**, rolling window `MaxFlexibleLookbehind`
-cho flexible pattern, `IncrementalHash` có điều kiện (`NeedsHash`), `OffsetAllowsStreaming`
-tương đương bản in-memory. Method này được tách cẩn thận để **biên dịch được cả C# 12**
-(SDK 8) lẫn C# 14 (SDK 10) — Span locals của vòng lặp được trích vào local function
-`MatchFlexibleChunk`.
+Chunked stream, **AC state preserved across chunk boundaries**, rolling window
+`MaxFlexibleLookbehind` for flexible patterns, conditional `IncrementalHash` (`NeedsHash`),
+`OffsetAllowsStreaming` mirroring the in-memory version. The method is deliberately structured to
+**compile under both C# 12** (SDK 8) **and C# 14** (SDK 10) — the Span locals of the streaming
+loop were extracted into the local function `MatchFlexibleChunk`.
 
 ---
 
-## 4. API chính
+## 4. Public API
 
-| API | Ghi chú |
-|-----|---------|
-| `SignatureParser.ParseFile / ParseLines / ParseHashFile / ParseNdbFile / ParseLdbFile / ParseCdbFile / ParseMetadataFile / ParseIdbFile` | Static, throw `FormatException` kèm `path:line` khi DB hỏng |
-| `CompiledSignatureSet.Match(...)` | Quét buffer in-memory |
-| `CompiledSignatureSet.MatchStreamAsync(...)` | Quét stream (dùng cho file lớn hơn `MaxFullBufferSize`) |
+| API | Notes |
+|-----|-------|
+| `SignatureParser.ParseFile / ParseLines / ParseHashFile / ParseNdbFile / ParseLdbFile / ParseCdbFile / ParseMetadataFile / ParseIdbFile` | Static; throws `FormatException` with `path:line` on malformed databases |
+| `CompiledSignatureSet.Match(...)` | In-memory buffer scan |
+| `CompiledSignatureSet.MatchStreamAsync(...)` | Stream scan (files larger than `MaxFullBufferSize`) |
 | `CompiledSignatureSet.MatchesFalsePositive(data)` | `.fp/.sfp` trust check |
-| `CompiledSignatureSet.FindLogicalCandidates(data) / IsLogicalSignaturePrefiltered(sig)` | Prefilter logical thuần-AND |
-| `AhoCorasickMatcher.Scan / ScanUntil / FindMatchingIds` | Public matcher riêng (chunked, state-preserving) |
+| `CompiledSignatureSet.FindLogicalCandidates(data) / IsLogicalSignaturePrefiltered(sig)` | Pure-AND logical prefilter |
+| `AhoCorasickMatcher.Scan / ScanUntil / FindMatchingIds` | Standalone matcher (chunked, state-preserving) |
 | `HexPattern.Parse / Matches / TryGetSearchAnchor / ToWideVariant` | Pattern engine |
 
 ---
 
-## 5. Điểm hiệu năng có chủ đích
+## 5. Deliberate performance points
 
-| Kỹ thuật | Vị trí | Lý do |
-|----------|--------|-------|
-| Sparse trie (edge-list int-index) → **frozen arrays** → **dense `int[256]`** cho 8192 state đầu | `AhoCorasick.cs` | DB thật 500K–2M states; freeze + `TrimExcess` giải phóng build-time lists |
-| Flyweight 256 instance | `ExactByteAtom.cs` | Không alloc per-byte khi parse DB lớn |
-| Anchor search (longest fixed run) cho flexible pattern | `MatchHelpers.cs` `MatchFlexibleCore` | Tránh backtracking ở mọi byte position |
-| Seed-balanced fragment index | `LogicalSignaturePrefilter.cs` | Chọn seed 4-byte hiếm nhất theo vòng FNV — cắt candidate trước khi đếm subsig |
-| BMH fast path khi set có đúng 1 fixed pattern | `CompiledSignatureSet.cs` | Bỏ AC overhead; thử **mọi occurrence** như `cli_bm_scanbuff` |
-| Cap candidate | `MaxCollectedCandidatesPerPattern=4096`, `MaxCollectedCandidatesTotal=65536` | Anchor phổ biến (zero-run, MZ pad) trên file lớn không thể buffer O(filesize) |
-| `MaxBacktrackingStates` (250K) + visited-set | `HexPattern.cs` | Chặn DoS của gap-heavy pattern; visited-set đảm bảo kết thúc O(atoms × length) |
+| Technique | Location | Reason |
+|-----------|----------|--------|
+| Sparse trie (int-indexed edge lists) -> **frozen arrays** -> **dense `int[256]`** for the first 8192 states | `AhoCorasick.cs` | Real databases have 500K-2M states; freezing + `TrimExcess` releases build-time lists |
+| Flyweight of 256 instances | `ExactByteAtom.cs` | No per-byte allocation while parsing large databases |
+| Anchor search (longest fixed run) for flexible patterns | `MatchHelpers.cs` `MatchFlexibleCore` | Avoids backtracking at every byte position |
+| Seed-balanced fragment index | `LogicalSignaturePrefilter.cs` | Picks the rarest 4-byte seed by FNV rounds — cuts candidates before subsig counting |
+| BMH fast path when the set has exactly one fixed pattern | `CompiledSignatureSet.cs` | Skips AC overhead; tries **every occurrence** like `cli_bm_scanbuff` |
+| Candidate caps | `MaxCollectedCandidatesPerPattern=4096`, `MaxCollectedCandidatesTotal=65536` | Frequent anchors (zero runs, MZ pads) on large files cannot buffer O(filesize) positions |
+| `MaxBacktrackingStates` (250K) + visited-set | `HexPattern.cs` | Bounds DoS from gap-heavy patterns; the visited set guarantees termination in O(atoms x length) |
 
-## 6. Tương thích ClamAV (đã đối chiếu source 1.5.4)
+## 6. ClamAV compatibility (verified against the 1.5.4 sources)
 
-| Chủ đề | Quyết định |
-|--------|-----------|
-| Offset `N,M` | Max-shift → match trong `[N, N+M]` **inclusive** (`cli_caloff` + `matcher-ac.c:1918`) |
-| Bare `EOF` | **Bị từ chối** (không tồn tại trong `cli_caloff`) — chỉ `EOF-n` |
-| `VI` offset | Hợp lệ (VersionInfo) — chỉ target PE/ELF/Mach-O |
-| Target gate | `EP+/EP-/SL+/SE/Sn/VI` **fail lúc load** nếu target ∉ {1, 6, 9} |
-| `[n-m]` hex | Gap thật — `cli_ac_addsig` chuyển thành dạng `{n-m}` (tối đa 2 lần dùng) |
-| ICMP opcode | 29 = SLE, 30 = SLT (khớp `clambc.h`, dùng bởi project Bytecode) |
-| `.ldb` expression | Right-associative: `0&1\|2` ≡ `0&(1\|2)` (do tầng Scanner evaluate, xem project Scanner) |
-| `.ign`/`.ign2` | Filter **trước** khi parse (skip FLevel-first như `cli_loadndb`) |
+| Topic | Decision |
+|-------|----------|
+| Offset `N,M` | Max shift -> match in `[N, N+M]` **inclusive** (`cli_caloff` + `matcher-ac.c:1918`) |
+| Bare `EOF` | **Rejected** (does not exist in `cli_caloff`) — only `EOF-n` |
+| `VI` offset | Valid (VersionInfo) — executable targets only |
+| Target gate | `EP+/EP-/SL+/SE/Sn/VI` **fail at load time** unless target is in {1, 6, 9} |
+| `[n-m]` hex | Real gap syntax — `cli_ac_addsig` converts it (max 2 uses) |
+| ICMP opcodes | 29 = SLE, 30 = SLT (matches `clambc.h`; consumed by the Bytecode project) |
+| `.ldb` expression | Right-associative: `0&1|2` == `0&(1|2)` (evaluated by the Scanner layer) |
+| `.ign`/`.ign2` | Filtered **before** hex parsing (FLevel-first like `cli_loadndb`) |
 
 ## 7. Thread-safety
 
-- Parser: static, thuần túy — an toàn mọi thread.
-- `CompiledSignatureSet`: mutable khi `Add()`, **immutable sau `Build()`** (convention enforced
-  bởi `_built` flag); scan path không mutate.
-- `AhoCorasickMatcher.Build()` / `LogicalSignaturePrefilter.Build()`: lazy, **không thread-safe nếu
-  gọi Build đồng thời từ 2 thread** — caller (CompiledSignatureSet) chịu trách nhiệm build trước.
-- `HexPattern.ToWideVariant`: lazy cache benign-race (compute trùng, cùng giá trị).
+- Parsers: static and pure — safe from any thread.
+- `CompiledSignatureSet`: mutable during `Add()`, **immutable after `Build()`** (enforced by the
+  `_built` flag); the scan path never mutates.
+- `AhoCorasickMatcher.Build()` / `LogicalSignaturePrefilter.Build()`: lazy, **not thread-safe if
+  Build is called concurrently from two threads** — the caller (CompiledSignatureSet) builds first.
+- `HexPattern.ToWideVariant`: lazy cache with a benign race (duplicate compute, equal value).
 
-## 8. Kiểm thử
+## 8. Testing
 
-- `Program.CompiledMatcherTests.cs` (50 asserts) — dày nhất: AC overlap/suffix/chunk-boundary,
-  streaming, FP suppression, BMH fast path, alternates, LDB modifiers.
-- `Program.NdbPolicyTests.cs` (35) — offset mọi dạng, `.ign/.ign2`, PUA, normalized targets.
-- `Program.SignatureParsingTests.cs` (17), `Program.MetadataTests.cs` (32), `Program.LdbParityTests.cs`
-  (12, parity với dòng LDB thật qua env opt-in).
+- `Program.CompiledMatcherTests.cs` (50 asserts) — the deepest suite: AC overlap/suffix/
+  chunk-boundary, streaming, FP suppression, BMH fast path, alternates, LDB modifiers.
+- `Program.NdbPolicyTests.cs` (35) — every offset form, `.ign/.ign2`, PUA, normalized targets.
+- `Program.SignatureParsingTests.cs` (17), `Program.MetadataTests.cs` (32),
+  `Program.LdbParityTests.cs` (12, parity against a real LDB line via env opt-in).

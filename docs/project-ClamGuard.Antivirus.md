@@ -1,31 +1,31 @@
 # project-ClamGuard.Antivirus
 
-> Ứng dụng desktop WPF của người dùng cuối: giao diện quét, bảo vệ thời gian thực, quarantine,
-> system inspector, toolkit và cập nhật database. MVVM-lite với event-broker, i18n EN/VI,
-> Light/Dark theme, toast/dialog tự vẽ (window chrome riêng).
+> The end-user WPF desktop application: the scanning UI, real-time protection, quarantine, the
+> system inspector, the toolkit and database updates. MVVM-lite with an event broker, EN/VI
+> localization, Light/Dark theming and custom-drawn toasts/dialogs (custom window chrome).
 
 ---
 
-## 1. Thông tin project
+## 1. Project facts
 
-| Thuộc tính | Giá trị |
+| Property | Value |
 |---|---|
 | Target framework | `net8.0-windows`, `WinExe` |
-| Dependency | `ClamGuard.Core`, `ClamGuard.Database`, `ClamGuard.Scanner` |
-| Số file | 58 (Views 9×2, Services 11, Controls 11, Theme 12, Localization 4, ViewModels 6, Models 6) |
-| Build cross-platform | `EnableWindowsTargeting=true` (CI chạy cả ubuntu) |
-| Manifest | `requireAdministrator`-neutral, `supportedOS` Win10; DPI: system-aware |
+| Dependencies | `ClamGuard.Core`, `ClamGuard.Database`, `ClamGuard.Scanner` |
+| Source files | 58 (Views 9x2, Services 11, Controls 11, Theme 12, Localization 4, ViewModels 6, Models 6) |
+| Cross-platform build | `EnableWindowsTargeting=true` (CI runs on ubuntu too) |
+| Manifest | non-admin, `supportedOS` Win10; system-aware DPI |
 
-## 2. Kiến trúc tổng thể
+## 2. Overall architecture
 
 ```text
-App.xaml(.cs)                  Composition root: merge resources (Converters → LightTheme → Icons →
-                               Controls → ClamGuardWindow), khởi tạo Settings/Theme/Localization,
+App.xaml(.cs)                  Composition root: merges resources (Converters -> LightTheme -> Icons ->
+                               Controls -> ClamGuardWindow), initializes Settings/Theme/Localization,
                                global exception handlers (Dispatcher/AppDomain/UnobservedTask)
 MainWindow (.xaml/.cs)         Shell: sidebar nav (RadioButton+Tag), header, progress, ContentControl
-MainWindow.ThreatHandling.cs   Xử lý kết quả scan: toast, policy thực thi, quarantine restore/delete
+MainWindow.ThreatHandling.cs   Scan-result handling: toasts, action policy, quarantine restore/delete
 Views/                         Overview, Scan, Security, System, History, Quarantine, Tools, Update, Settings
-ViewModels/                    MainViewModel (+partial Scanning) — state + 32 command + 23 event
+ViewModels/                    MainViewModel (+partial Scanning) — state + 32 commands + 23 events
                                Commands: RelayCommand, AsyncRelayCommand (reentrancy guard), ParameterRelayCommand
 Services/                      AntivirusEngineService, RealtimeProtectionService, QuarantineService,
                                MemoryScanService, StartupScanService, SystemInspectorService,
@@ -34,109 +34,115 @@ Models/                        ActiveTaskItem (INPC), QuarantineItem, ScanHistor
                                ScanResultRowItem, SystemSnapshot
 Controls/                      ClamGuardWindow (chrome+toast+dialog API), ClamGuardDialog, ClamGuardToast(+Host),
                                DesktopToastWindow, LoadingOverlay, ToastKind
-Theme/                         DarkTheme/LightTheme (44 brush parity), Controls.{Buttons,Cards,Inputs,
-                               DataGrid,Scrolling,Status,Misc,Converters}, Icons (~30 geometry)
+Theme/                         DarkTheme/LightTheme (44 brushes, 1:1 parity), Controls.{Buttons,Cards,Inputs,
+                               DataGrid,Scrolling,Status,Misc,Converters}, Icons (~30 geometries)
 Localization/                  LocalizationService + LocExtension + en-US.lng + vi-VN.lng
 ```
 
-**Luồng MVVM-lite**: View binding 2 chiều vào `MainViewModel`; VM phát **event** (23 cái,
-`QuickScanRequested`…) → `MainWindow` code-behind xử lý hành vi (dialog, điều hướng, gọi service).
-Async plumbing: `Progress<T>` marshal UI, `SynchronizationContext.Post` trong memory scan,
-không `.Result/.Wait()`.
+**MVVM-lite flow**: views bind two-way into `MainViewModel`; the VM raises **events** (23,
+e.g. `QuickScanRequested`) that the `MainWindow` code-behind handles (dialogs, navigation,
+service calls). Async plumbing: `Progress<T>` marshals to the UI thread,
+`SynchronizationContext.Post` in the memory scan, no `.Result/.Wait()` anywhere.
 
-## 3. Services chi tiết
+## 3. Services in detail
 
-### 3.1. `AntivirusEngineService` — facade engine
+### 3.1. `AntivirusEngineService` — the engine facade
 
-- Init **single-flight** (`Task` field): lần gọi thứ hai trong lúc init trả về cùng Task, không
-  trả sớm khi DB chưa sẵn sàng.
-- `ScanFileAsync` / `ScanFolderAsync` (`Parallel.ForEachAsync`, MaxDegreeOfParallelism ≤ 4,
-  symlink/reparse handling, dedupe dir) / `ScanMemoryBufferAsync` / `UpdateDatabaseAsync`.
-- `EnumerateScanFiles` **enforce `options.MaxFiles` thật** (mặc định 10 000 — dừng duyệt streaming,
-  `LimitReached=true` → heuristic + thông báo UI).
-- Đổi `DatabaseDirectory` → lưu settings + reload engine.
+- Init is **single-flight** (a `Task` field): a second call during initialization returns the same
+  Task instead of returning early while the database is not ready.
+- `ScanFileAsync` / `ScanFolderAsync` (`Parallel.ForEachAsync`, MaxDegreeOfParallelism <= 4,
+  symlink/reparse handling, directory dedupe) / `ScanMemoryBufferAsync` / `UpdateDatabaseAsync`.
+- `EnumerateScanFiles` **enforces the advertised `options.MaxFiles`** (default 10,000 — streaming
+  enumeration stops, `LimitReached=true` -> heuristic + UI notification).
+- Changing `DatabaseDirectory` persists settings and reloads the engine.
 
 ### 3.2. `RealtimeProtectionService` — FileSystemWatcher
 
-| Khía cạnh | Chi tiết |
-|-----------|----------|
+| Aspect | Detail |
+|--------|--------|
 | Watch | Single folder (`IncludeSubdirectories`), `InternalBufferSize = 64KB` |
-| Debounce | `ConcurrentDictionary<path,CTS>` — event mới **cancel** event cũ (delay 900ms); generation token: task cũ đã qua delay và đang scan vẫn bị **so sánh entry** sau scan, khác → bỏ kết quả (không double-quarantine) |
-| Chờ file ghi xong | `WaitUntilReadableAsync`: 5 lần × ~300ms, ổn định chiều dài mới scan; bỏ cuộc → raise Error |
-| Overflow watcher | Error → restart watcher + **re-schedule 500 file mới nhất** (best-effort recovery) |
-| Loại trừ | Thư mục database (tự bảo vệ), dotfile, directory |
-| Vòng đời | Stop(): cancel + clear, CTS dispose trong `finally` của chính task |
+| Debounce | `ConcurrentDictionary<path,CTS>` — a new event **cancels** the previous one (900ms delay); a generation token: a task that already passed the delay and is scanning still compares its entry after the scan and discards the result if replaced (no double-quarantine) |
+| Wait for writes | `WaitUntilReadableAsync`: 5 attempts x ~300ms; scans once the length is stable; giving up raises Error |
+| Watcher overflow | Error -> restart the watcher + **re-schedule the 500 newest files** (best-effort recovery) |
+| Exclusions | The database folder (self-protection), dotfiles, directories |
+| Lifecycle | Stop(): cancel + clear; CTS disposed in the owning task's `finally` |
 
-### 3.3. `QuarantineService` — kho cách ly mã hoá
+### 3.3. `QuarantineService` — the encrypted quarantine
 
-- **Seal**: file body mã hoá **AES-256-CBC streamed** (1MB chunk, không materialize file lớn);
-  key 32B + IV 16B seal bằng **DPAPI** (crypt32, P/Invoke) — chỉ user hiện tại giải được; header
-  `MCGQ` + version 2; entry legacy plaintext vẫn restore được.
-- Index `index.json`: ghi atomic (`.tmp` + `File.Move(overwrite)`), RMW có lock.
-- `Restore`: validate target **không nằm trong store** (chặn write-primitive từ index bị giả mạo),
-  decrypt stream, `FileAttributes.Normal`.
-- `Delete`: reset ReadOnly trước `File.Delete` (bug cũ: fail 100 %).
-- Realtime action "Delete" đi **qua quarantine** (recoverable với false-positive).
+- **Seal**: the file body is encrypted with **streamed AES-256-CBC** (1MB chunks — large files
+  never materialize in RAM); the 32B key + 16B IV are sealed with **DPAPI** (crypt32 via
+  P/Invoke) — only the current user can decrypt; header `MCGQ` + version 2; legacy plaintext
+  entries remain restorable.
+- Index `index.json`: atomic write (`.tmp` + `File.Move(overwrite)`), RMW under a lock.
+- `Restore`: validates the target is **not inside the store** (blocks the write-primitive from a
+  tampered index), decrypts as a stream, `FileAttributes.Normal`.
+- `Delete`: clears ReadOnly before `File.Delete` (the old bug made it fail 100% of the time).
+- The realtime "Delete" action goes **through quarantine** (recoverable on false positives).
 
-### 3.4. `MemoryScanService` — quét bộ nhớ tiến trình
+### 3.4. `MemoryScanService` — process memory scanning
 
-`OpenProcess(VM_READ|QUERY_INFORMATION)` + `VirtualQueryEx` walk (≤ `0x7FFFFFFEFFFF`), chỉ region
-MEM_PRIVATE hoặc MEM_IMAGE có execute/copy flag; **budget chặn lúc thu thập** (không materialize
-hết mới kiểm); skip region toàn zero; chunk 1MB + overlap 4KB (chống signature cắt đôi); Process
-handles được dispose. Không yêu cầu admin — tiến trình không đọc được bị skip có đếm.
+`OpenProcess(VM_READ|QUERY_INFORMATION)` + a `VirtualQueryEx` walk (<= `0x7FFFFFFEFFFF`), only
+MEM_PRIVATE regions or MEM_IMAGE regions with execute/copy flags; the budget gates **collection**
+(no materialize-everything-then-check); all-zero regions are skipped; 1MB chunks + 4KB overlap
+(catches signatures split across boundaries); Process handles are disposed. No admin required —
+unreadable processes are skipped and counted.
 
 ### 3.5. `SystemInspectorService` — profile + file inspector
 
 - Snapshot: OS/arch/CPU/RAM (`GlobalMemoryStatusEx`), drives, networks, processes, startup
-  (Run/RunOnce HKLM/HKCU/WOW64, Startup folders, dịch vụ auto).
-- **File inspector**: SHA-256, version info, và kiểm tra chữ ký số **đúng nghĩa**:
-  validity window + **X509Chain** (revocation online, exclude-root) + **EKU code-signing**
-  (`1.3.6.1.5.5.7.3.3`) — self-signed không thể hiện "valid".
+  (Run/RunOnce HKLM/HKCU/WOW64, Startup folders, auto services).
+- **File inspector**: SHA-256, version info, and a *real* signature check: validity window +
+  **X509Chain** (online revocation, exclude-root) + the **code-signing EKU**
+  (`1.3.6.1.5.5.7.3.3`) — self-signed certificates can no longer show "valid".
 
-### 3.6. Còn lại
+### 3.6. The rest
 
-| Service | Vai trò chính |
-|---------|---------------|
-| `StartupScanService` | Thu thập autostart → resolve exe (strip `\??\`, quoted-path, longest-prefix) |
-| `ThemeService` | Swap dictionary Light/Dark tại đúng index; `Auto` đọc registry `AppsUseLightTheme` |
-| `LocalizationService` | Singleton; load `.lng` **external ưu tiên → embedded fallback**; indexer `Item[]` INPC cho binding `{loc:Loc}`; `Format` có args |
-| `JsonSettingsStore` | Ghi atomic `.tmp` + move; Load fallback `.tmp` khi file chính hỏng; migrate legacy path |
-| `AppPaths` | Đường dẫn: settings (LocalAppData), database/quarantine/cache (ProgramData), `EnsureDirectories` |
-| `ActiveTaskTracker` | Registry task đang chạy + aggregate progress; CTS lifecycle |
+| Service | Main role |
+|---------|-----------|
+| `StartupScanService` | Collects autostart entries -> resolves executables (strips `\??\`, quoted paths, longest-prefix) |
+| `ThemeService` | Swaps the Light/Dark dictionary in place; `Auto` reads the `AppsUseLightTheme` registry value |
+| `LocalizationService` | Singleton; loads `.lng` **external first -> embedded fallback**; `Item[]` INPC indexer for `{loc:Loc}` bindings; `Format` with args |
+| `JsonSettingsStore` | Atomic write (`.tmp` + move); Load falls back to `.tmp` when the main file is corrupt; migrates legacy paths |
+| `AppPaths` | Paths: settings (LocalAppData), database/quarantine/cache (ProgramData), `EnsureDirectories` |
+| `ActiveTaskTracker` | Registry of running tasks + aggregate progress; CTS lifecycle |
 
-## 4. Trang Tools — toolkit 6 công cụ
+## 4. The Tools page — a six-tool toolkit
 
-| Tool | Cơ chế |
-|------|--------|
-| **Mã băm & Kiểm tra tổng** | OpenFileDialog → MD5/SHA-1/SHA-256 (Task.Run) + copy clipboard |
-| **Tệp thử nghiệm EICAR** | Dialog xác nhận → ghi EICAR chuẩn (68 byte) ra Desktop → mở Explorer select — test đường realtime/scan an toàn |
-| **Dọn dẹp tệp tạm** | Quét `%TEMP%` + Windows\Temp (file **cũ hơn 24 giờ**, skip locked/reparse/system-attr) → tổng dung lượng → confirm → xoá, báo freed/skipped |
-| **Kiểm tra chữ ký mẫu** | Dán NDB (`name:target:offset:hex`) hoặc `.db` (`name=hex`) → temp file → `SignatureParser.ParseFile` → `SignatureDatabase` + `ScannerEngine` scan file mẫu → báo KHỚP/tên sig @ offset |
-| File Inspector | Qua `InspectFileCommand` (system inspector) |
-| System Profile | Qua `RefreshSystemCommand` |
+| Tool | Mechanism |
+|------|-----------|
+| **Checksum & Hash** | OpenFileDialog -> MD5/SHA-1/SHA-256 (Task.Run) + clipboard copy |
+| **EICAR test file** | Confirmation dialog -> writes the standard 68-byte EICAR string to the Desktop -> opens Explorer with the file selected — a safe end-to-end protection test |
+| **Temp file cleanup** | Scans `%TEMP%` + Windows\Temp (files **older than 24 hours**, skips locked/reparse/system-attribute files) -> total size -> confirm -> deletes, reports freed/skipped |
+| **Signature tester** | Paste an NDB (`name:target:offset:hex`) or `.db` (`name=hex`) line -> temp file -> `SignatureParser.ParseFile` -> `SignatureDatabase` + `ScannerEngine` scans a sample file -> reports MATCH with the signature name @ offset |
+| File Inspector | Via `InspectFileCommand` (system inspector) |
+| System Profile | Via `RefreshSystemCommand` |
 
 ## 5. UI infrastructure
 
-- **ClamGuardWindow**: WindowChrome tự vẽ, `PART_` template, `ShowToast` (in-app + desktop popup,
-  desktop cap 4), `ShowDialogAsync` (TaskCompletionSource `RunContinuationsAsynchronously` — không
-  deadlock), theme refresh qua event.
-- **Theme**: 2 dictionary 44 brush **parity 1-1**; mọi brush dùng `DynamicResource` → swap sạch;
-  progress indeterminate có **animation pulse** (template custom đã bỏ animation mặc định của WPF).
-- **i18n**: key chuẩn hoá `[section]key=value`; thiếu key hiển thị chính key (fallback hữu hình);
-  `common.on/off`, `history.*` đầy đủ cả 2 ngôn ngữ; ToolsView encoding UTF-8 đúng (mojibake đã sửa).
+- **ClamGuardWindow**: custom WindowChrome, `PART_` template, `ShowToast` (in-app + desktop
+  popup, desktop capped at 4), `ShowDialogAsync` (TaskCompletionSource with
+  `RunContinuationsAsynchronously` — no deadlock), theme refresh via event.
+- **Theming**: two 44-brush dictionaries in **1:1 parity**; every brush is a `DynamicResource` so
+  swapping is clean; the indeterminate progress bar has a **pulse animation** (the custom
+  template had removed WPF's default animation).
+- **Localization**: normalized `[section]key=value` keys; a missing key displays itself
+  (visible fallback); `common.on/off`, `history.*` complete in both languages; ToolsView is saved
+  in correct UTF-8 (the mojibake placeholders were fixed).
 
-## 6. An ninh biên
+## 6. Edge security
 
-| Vùng | Biện pháp |
-|------|-----------|
-| Settings | Atomic write + fallback; không trust path từ settings khi dùng |
-| CSV export | Escape `"` + **neutralize formula injection** (`=+-@\t\r` đầu cell → `'`) |
-| Global exceptions | `DispatcherUnhandledException` (log + Handled), `AppDomain.UnhandledException`, `TaskScheduler.UnobservedTaskException` (log) |
-| AsyncRelayCommand | Log mọi exception bị nuốt (Trace) |
-| Quarantine | DPAPI+AES, validate restore, lock index (xem §3.3) |
+| Area | Measure |
+|------|---------|
+| Settings | Atomic write + fallback; paths from settings are not trusted blindly |
+| CSV export | Escapes `"` + **neutralizes formula injection** (`=+-@\t\r` at cell start -> `'`) |
+| Global exceptions | `DispatcherUnhandledException` (log + Handled), `AppDomain.UnhandledException`,
+  `TaskScheduler.UnobservedTaskException` (log) |
+| AsyncRelayCommand | Logs every swallowed exception (Trace) |
+| Quarantine | DPAPI+AES, restore validation, index lock (section 3.3) |
 
-## 7. Kiểm thử
+## 7. Testing
 
-⚠️ Project này **không được tham chiếu bởi `ClamGuard.Tests`** (test harness chỉ phủ 6 library
-project) — realtime/quarantine/memory-scan/toolkit hiện **không có unit test**. Logic trừu tượng
-được kiểm gián tiếp qua engine; các service I/O nặng (DPAPI, FSW) cần integration test riêng.
+This project is **not referenced by `ClamGuard.Tests`** (the harness covers the six library
+projects only) — realtime/quarantine/memory-scan/toolkit currently have **no unit tests**.
+Abstract logic is exercised indirectly through the engine; the I/O-heavy services (DPAPI, FSW)
+need dedicated integration tests.

@@ -1,47 +1,50 @@
 # project-ClamGuard.Yara
 
-> **Emulator subset của YARA** chạy managed: parse rule (strings + conditions cơ bản), scan
-> buffer và trả về match. ⚠️ Không phải binding libyara — tên class mang "Yara" để đồng bộ khái
-> niệm, tài liệu class ghi rõ phạm vi subset và cơ chế warning cho mọi construct chưa hỗ trợ.
+> A managed **YARA subset emulator**: parses rules (basic strings + conditions), scans buffers
+> and reports matches. This is not a libyara binding — the class names carry "Yara" to align with
+> the concept, and the class documentation states the subset scope plus the warning mechanism for
+> unsupported constructs.
 
 ---
 
-## 1. Thông tin project
+## 1. Project facts
 
-| Thuộc tính | Giá trị |
+| Property | Value |
 |---|---|
 | Target framework | `net8.0` |
 | Dependency | `ClamGuard.Core` |
-| Số file nguồn | 3 (`YaraEngine.cs`, `YaraModels.cs`, `YaraContentScanner.cs`) |
+| Source files | 3 (`YaraEngine.cs`, `YaraModels.cs`, `YaraContentScanner.cs`) |
 
-## 2. Phạm vi hỗ trợ (trung thực)
+## 2. Honest support matrix
 
-| Nhóm | Hỗ trợ | Không hỗ trợ (→ warning, rule bị bỏ qua có ghi log) |
-|------|--------|------------------------------------------------------|
-| Strings | Plain `"..."`, hex thuần | Hex wildcard `??`, jump `{n}`/`{n-m}` |
-| Modifiers | `nocase`, `ascii`, `xor` (xor trên byte gốc, so case-insensitive) | `wide` trên **regex** (warn), tổ hợp lạ |
-| Regex literals | `/.../` với escape `\/` đúng | |
-| Conditions | `and/or/not`, count, `filesize` (bytes) | `filesize > 100KB` (suffix KB/MB), `N of (...)`, glob `($a*)`, `for`, modules (`pe.`…), condition không nhận diện |
-| Id | **Case-sensitive** (đúng YARA) | |
-| Khác | MaxRules truncate → warning | |
+| Group | Supported | Unsupported (-> warning, rule skipped with a reason) |
+|-------|-----------|------------------------------------------------------|
+| Strings | Plain `"..."`, plain hex | Hex wildcards `??`, jumps `{n}`/`{n-m}` |
+| Modifiers | `nocase`, `ascii`, `xor` (xor over the original bytes, case-insensitive compare) | `wide` on **regex** (warns), unusual combos |
+| Regex literals | `/.../ ` with correct `\/` escaping | |
+| Conditions | `and/or/not`, count, `filesize` (bytes) | `filesize > 100KB` (KB/MB suffixes), `N of (...)`, globs `($a*)`, `for`, modules (`pe.`...), unrecognized conditions |
+| Identifiers | **Case-sensitive** (matches YARA) | |
+| Other | MaxRules truncation -> warning | |
 
-## 3. Điểm kỹ thuật chính
+## 3. Key technical points
 
-### 3.1. Comment stripper bằng state machine (fix CRITICAL)
+### 3.1. Comment stripper as a state machine (critical fix)
 
-Bản cũ dùng `Regex.Replace(text, @"//.*?$")` — phá hủy string chứa `//`
-(`$a = "http://evil.com"` mất quote đóng → rule parse fail → **âm tính giả hàng loạt**, URL cực
-phổ biến trong rule YARA). Nay là state machine tôn trọng:
+The old implementation used `Regex.Replace(text, @"//.*?$")`, which destroyed string literals
+containing `//` (`$a = "http://evil.com"` lost its closing quote -> rule parse failure ->
+**mass false negatives**; URLs are extremely common in YARA rules). It is now a state machine
+that respects:
 
-- string `"..."` với `\` escape; char `'...'`;
-- regex literal `/.../` — một `/` chỉ mở regex khi đứng ở **value boundary** (sau `=`, `(`,
-  whitespace, toán tử); trong regex `\/` là escape;
-- `//` và `/* */` chỉ bị xoá khi ở ngoài literal; unterminated `/*` giữ nguyên văn.
+- string literals `"..."` with `\` escapes; char literals `'...'`;
+- regex literals `/.../` — a `/` only opens a regex at a **value boundary** (after `=`, `(`,
+  whitespace, an operator); inside a regex `\/` is an escape;
+- `//` and `/* */` are only removed outside literals; an unterminated `/*` keeps the text verbatim.
 
-### 3.2. Cơ chế warning (không còn silent-drop)
+### 3.2. Warning mechanism (no more silent drops)
 
-`YaraEngine.Warnings` (`IReadOnlyList<string>`, public) + `YaraMatch.Warnings` (per-rule,
-init-only, default rỗng). Mọi trường hợp rule bị bỏ/silent-false đều phát warning, ví dụ:
+`YaraEngine.Warnings` (`IReadOnlyList<string>`, public) + `YaraMatch.Warnings` (per rule,
+init-only, empty by default). Every case where a rule is skipped or silently false emits a
+warning, for example:
 
 ```text
 rule 'X': hex string '$a': wildcards ('?') unsupported; string ignored
@@ -49,25 +52,27 @@ rule 'X': unsupported condition 'filesize > 100KB' ignored
 YARA rule limit reached (MaxRules = N); additional rules were ignored
 ```
 
-Load-time validation (`ValidateConsume`) bắt token không consumable **trước** khi scan — rule
-không hỗ trợ không được báo "không match" mà là "bị bỏ qua có lý do".
+Load-time validation (`ValidateConsume`) catches non-consumable tokens **before** scanning — an
+unsupported rule is reported as "skipped with a reason", never as "no match".
 
-### 3.3. Scan
+### 3.3. Scanning
 
-`YaraEngine` naive scan O(rules × filesize) — chấp nhận cho use-case test/sample; không dành cho
-DB lớn (khác hẳn Aho-Corasick của project Signatures). Xoá/xor/nocase áp đúng thứ tự biến thể.
-`YaraContentScanner` là adapter `IContentScanner` (gắn qua `ScanOptions.YaraRuleDirectory`);
-project Database nạp `.yar` như special-DB.
+`YaraEngine` performs a naive O(rules x filesize) scan — acceptable for test/sample use cases,
+not for large databases (nothing like the Aho-Corasick in project Signatures). Xor/nocase
+variants are applied in the correct order. `YaraContentScanner` is the `IContentScanner` adapter
+(attached via `ScanOptions.YaraRuleDirectory`); project Database loads `.yar` as a special
+database.
 
-## 4. Hướng phát triển
+## 4. Roadmap
 
-1. **Đổi tên/document** đã làm (subset emulator). Nếu cần YARA đầy đủ: binding libyara native
-   hoặc chuyển rule sang LDB/NDB của engine.
-2. Bổ sung hex wildcard + `of` conditions là bước mở rộng tự nhiên nhất (đã có warning scaffolding).
-3. Perf: nếu rule set lớn, chuyển sang pattern index tương tự prefilter của Signatures.
+1. Renaming/documentation is done (subset emulator). For full YARA: bind native libyara or
+   translate rules into the engine's LDB/NDB formats.
+2. Hex wildcards + `of` conditions are the most natural next extensions (the warning scaffolding
+   is already in place).
+3. Performance: for large rule sets, add a pattern index similar to the Signatures prefilter.
 
-## 5. Kiểm thử
+## 5. Testing
 
-`Program.YaraBytecodeTests.cs`: inline rule `condition: $mz and $hello` match `$hello` qua nested
-archive; harness behavioral 27/27 trong đợt hardening (URL trong string sống sót qua comment
-stripper, xor+nocase, case-sensitive id…).
+`Program.YaraBytecodeTests.cs`: the inline rule `condition: $mz and $hello` matches `$hello`
+through a nested archive; a 27/27 behavioral harness ran during hardening (URLs inside strings
+survive the comment stripper, xor+nocase, case-sensitive identifiers...).

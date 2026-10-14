@@ -1,78 +1,77 @@
 # project-ClamGuard.Core
 
-> Nền tảng chung cho toàn bộ hệ thống: codec hex, model domain dùng chung, cấu hình quét
-> (`ScanOptions`/`ScanLimits`) và chính sách lọc kết quả. **Không tham chiếu project nào** —
-> mọi project khác phụ thuộc vào đây.
+> The shared foundation of the whole system: the hex codec, domain models, scan configuration
+> (`ScanOptions`/`ScanLimits`) and result-filtering policy. **Depends on nothing** — every other
+> project depends on this one.
 
 ---
 
-## 1. Thông tin project
+## 1. Project facts
 
-| Thuộc tính | Giá trị |
+| Property | Value |
 |---|---|
-| Target framework | `net8.0` (kế thừa từ `Directory.Build.props`) |
-| Dependency | Không có (project gốc của graph) |
+| Target framework | `net8.0` (inherited from `Directory.Build.props`) |
+| Dependencies | None (root of the dependency graph) |
 | Compiler settings | `Nullable=enable`, `TreatWarningsAsErrors=true`, `Deterministic=true`, `LangVersion=latest` |
-| Số file nguồn | 2 (`Hex.cs`, `Models.cs`) |
+| Source files | 2 (`Hex.cs`, `Models.cs`) |
 
-Vị trí trong dependency graph:
+Position in the dependency graph:
 
 ```text
-ClamGuard.Core   ← không phụ thuộc ai
-├── ClamGuard.Signatures
-├── ClamGuard.Yara
-├── ClamGuard.Bytecode
-├── ClamGuard.Database   (→ Signatures, Yara, Bytecode)
-├── ClamGuard.Scanner    (→ tất cả trên)
-└── ClamGuard.Antivirus  (→ Core, Database, Scanner)
+ClamGuard.Core   <- depends on nothing
++-- ClamGuard.Signatures
++-- ClamGuard.Yara
++-- ClamGuard.Bytecode
++-- ClamGuard.Database   (-> Signatures, Yara, Bytecode)
++-- ClamGuard.Scanner    (-> all of the above)
++-- ClamGuard.Antivirus  (-> Core, Database, Scanner)
 ```
 
 ---
 
-## 2. Thành phần chính
+## 2. Components
 
-### 2.1. `Hex.cs` — codec hex tĩnh
+### 2.1. `Hex.cs` — static hex codec
 
-| API | Vai trò |
-|-----|---------|
-| `HexCodec.TryDecode(string, out byte[])` | Hex → byte[]; fail khi ký tự không hợp lệ hoặc độ dài lẻ |
-| `HexCodec.ToLowerHex(byte[])` | byte[] → hex lowercase (dùng cho hiển thị/manifest) |
+| API | Role |
+|-----|------|
+| `HexCodec.TryDecode(string, out byte[])` | Hex to byte[]; fails on invalid characters or odd length |
+| `HexCodec.ToLowerHex(byte[])` | byte[] to lowercase hex (display/manifest) |
 
-Đúng ngữ nghĩa hex của ClamAV: chỉ ASCII, chấp nhận hoa/thường lẫn lộn. Là path nóng khi load
-DB hàng trăm nghìn signature.
+Semantics match ClamAV hex: ASCII only, mixed case accepted. This is a hot path when loading a
+database with hundreds of thousands of signatures.
 
 ### 2.2. `Models.cs` — domain model & policy
 
 **Enums:**
 
-| Enum | Ý nghĩa |
+| Enum | Meaning |
 |------|---------|
-| `ScanVerdict` | `Clean`, `Malicious`, `PotentiallyUnwanted`, `StrongIndicator`, `Trusted`, `Timeout`, `Error` — kết quả phân loại cuối của một lần scan |
-| `SignatureType` | Nhóm chữ ký: `Hash`, `Ndb`, `Logical`, `Content`, `Metadata`, `Trust`, … |
-| `HashAlgorithmKind` | `Md5`, `Sha1`, `Sha256` — chọn theo **độ dài** chuỗi hex trong DB |
-| `DatabaseFormat` | Định dạng DB khi load |
+| `ScanVerdict` | `Clean`, `Malicious`, `PotentiallyUnwanted`, `StrongIndicator`, `Trusted`, `Timeout`, `Error` — the final classification of one scan |
+| `SignatureType` | Signature families: `Hash`, `Ndb`, `Logical`, `Content`, `Metadata`, `Trust`, ... |
+| `HashAlgorithmKind` | `Md5`, `Sha1`, `Sha256` — selected by the **length** of the hex string in the database |
+| `DatabaseFormat` | Database format on load |
 
-**Records chính:**
+**Core records:**
 
-| Record | Trường đáng chú ý |
-|--------|--------------------|
-| `Detection(string Name, SignatureType Type, long? Offset, string SourceFile, string Detail)` | Một phát hiện — `Offset` nullable (hash detection không có offset) |
-| `ScanResult(ScanVerdict Verdict, string FilePath, string? FileType, IReadOnlyList<Detection> Detections, long BytesScanned, TimeSpan Duration, DatabaseInfo? Database)` | Kết quả hoàn chỉnh, immutable — mọi tầng trả về kiểu này |
-| `DatabaseInfo` | Thông tin DB đã nạp (tên, đường dẫn, version) |
+| Record | Notable fields |
+|--------|----------------|
+| `Detection(string Name, SignatureType Type, long? Offset, string SourceFile, string Detail)` | One finding; `Offset` is nullable (hash detections have no offset) |
+| `ScanResult(ScanVerdict Verdict, string FilePath, string? FileType, IReadOnlyList<Detection> Detections, long BytesScanned, TimeSpan Duration, DatabaseInfo? Database)` | Complete immutable result — every layer returns this type |
+| `DatabaseInfo` | Loaded database info (name, path, version) |
 
-**Cấu hình quét:**
+**Scan configuration:**
 
-| Class | Vai trò |
-|-------|---------|
-| `ScanOptions` | Tùy chọn người dùng: bật/tắt từng parser (`ScanArchive`, `ScanPE`, `ScanPDF`, `ScanHTML`, `ScanOneNote`, `ScanImageFuzzyHash`, …), heuristics (`EnableHeuristics`, `HeuristicExceedsMax`, `HeuristicEncryptedArchive/Doc`, `HeuristicPrecedence`), `DetectPUA`, `CollectAllMatches`, `MaxThreads`, `Recursive`, `FollowSymlinks`, `ExcludeDirectories/Extensions`, `YaraRuleDirectory`, `BytecodeDirectory`, `ContentScanners`. Mặc định bám ClamAV 1.5.x. `Default` trả về instance mới mỗi lần truy cập. |
-| `ScanLimits` | Trần an toàn: `MaxArchiveDepth` (mặc định 17, validate 1..100), `MaxFileSize`, `MaxScanSize`, `MaxFiles`, `MaxFullBufferSize`, `MaxArchiveEntries`, `MaxArchiveExpandedBytes`, `MaxArchiveCompressionRatio`, `MaxEmbeddedStreamSize`, `MaxHtmlNormalize`, `StreamChunkSize`, `MaxFlexibleLookbehind`, `MaxPatternMatchesPerSignature`, `MaxLogicalDepth`… `Validate()` **recover** `MaxFileSize` về `[1GiB, 2GiB]` thay vì fail. |
-| `UpdateOptions` | Tùy chọn update DB. |
+| Class | Role |
+|-------|------|
+| `ScanOptions` | User-facing switches: per-parser toggles (`ScanArchive`, `ScanPE`, `ScanPDF`, `ScanHTML`, `ScanOneNote`, `ScanImageFuzzyHash`, ...), heuristics (`EnableHeuristics`, `HeuristicExceedsMax`, `HeuristicEncryptedArchive/Doc`, `HeuristicPrecedence`), `DetectPUA`, `CollectAllMatches`, `MaxThreads`, `Recursive`, `FollowSymlinks`, `ExcludeDirectories/Extensions`, `YaraRuleDirectory`, `BytecodeDirectory`, `ContentScanners`. Defaults track ClamAV 1.5.x. `Default` returns a fresh instance on every access. |
+| `ScanLimits` | Safety ceilings: `MaxArchiveDepth` (default 17, validated 1..100), `MaxFileSize`, `MaxScanSize`, `MaxFiles`, `MaxFullBufferSize`, `MaxArchiveEntries`, `MaxArchiveExpandedBytes`, `MaxArchiveCompressionRatio`, `MaxEmbeddedStreamSize`, `MaxHtmlNormalize`, `StreamChunkSize`, `MaxFlexibleLookbehind`, `MaxPatternMatchesPerSignature`, `MaxLogicalDepth`... `Validate()` **recovers** `MaxFileSize` into `[1GiB, 2GiB]` instead of failing. |
+| `UpdateOptions` | Database update options. |
 
-`ScanOptions.MaxRecursion` (mặc định 17) được merge vào limits qua
-`CreateEffectiveLimits()`: `MaxArchiveDepth = min(limits, MaxRecursion)` — mọi giới hạn cuối cùng
-đi qua một điểm này.
+`ScanOptions.MaxRecursion` (default 17) is merged into the limits via `CreateEffectiveLimits()`:
+`MaxArchiveDepth = min(limits, MaxRecursion)` — every effective limit flows through this single point.
 
-**Contract mở rộng:**
+**Extension contract:**
 
 ```csharp
 public interface IContentScanner
@@ -82,38 +81,39 @@ public interface IContentScanner
 }
 ```
 
-Cho phép gắn scanner ngoài (Yara, Bytecode) vào pipeline qua `ScanOptions.ContentScanners`.
+Lets external scanners (Yara, Bytecode) plug into the pipeline through `ScanOptions.ContentScanners`.
 
-**Policy lọc detection:**
+**Detection filtering policy:**
 
-| Hàm | Vai trò |
-|-----|---------|
-| `IsPuaName(name)` | Nhận diện tiền tố `PUA.` |
-| `IsHeuristicName(name)` / `IsHeuristic(detection)` | Nhận diện detection dạng heuristic (`Heuristics.*`) |
-| `ScanOptions.FilterDetections(list)` | Áp dụng PUA/heuristic policy: `DetectPUA=false` lọc PUA nhưng giữ malware; `HeuristicExceedsMax=false` lọc heuristic; có `HeuristicPrecedence` cho phép heuristic thắng trước |
-| `ScanOptions.HasBlockingDetections(list)` | Có detection "chặn" (malware, hoặc PUA/heuristic nếu bật) — dùng cho short-circuit early-exit |
-| `IsExcludedDirectory(root, fullPath, excludes)` | Match **đúng path segment** (không substring), gồm cả hậu duệ |
+| Function | Role |
+|----------|------|
+| `IsPuaName(name)` | Detects the `PUA.` prefix |
+| `IsHeuristicName(name)` / `IsHeuristic(detection)` | Detects heuristic detections (`Heuristics.*`) |
+| `ScanOptions.FilterDetections(list)` | Applies PUA/heuristic policy: `DetectPUA=false` filters PUA but keeps malware; `HeuristicExceedsMax=false` filters heuristics; `HeuristicPrecedence` lets a heuristic win first |
+| `ScanOptions.HasBlockingDetections(list)` | True when a "blocking" detection exists (malware, or PUA/heuristic when enabled) — used for early-exit short-circuits |
+| `IsExcludedDirectory(root, fullPath, excludes)` | Matches **exact path segments** (not substrings), including descendants |
 
-📌 Chi tiết ngữ nghĩa offset/pattern của database xem
+For the database formats behind these types, see
 [`daily_CVD_Signature_Format_Analysis.md`](./daily_CVD_Signature_Format_Analysis.md).
 
 ---
 
-## 3. Quy ước thiết kế
+## 3. Design rules
 
-1. **Immutable result**: `Detection`/`ScanResult` là record — an toàn truyền qua thread, không
-   ai mutate kết quả người khác.
-2. **Validate-recover, không throw tùy tiện**: `ScanLimits.Validate()` normalize giá trị phi logic
-   (≤ 0, overflow int) về default an toàn — quét tiếp thay vì crash (test
-   `Program.ScanOptionsTests.cs` khóa hành vi này, kể cả case `MaxFileSize` âm do overflow).
-3. **Một điểm cấu hình**: `Directory.Build.props` ở root áp cho mọi project — project này chủ động
-   không khai báo gì thêm để kế thừa (`Nullable`, `TreatWarningsAsErrors`).
-4. **Không dependency ngoài**: giữ project này *payload-free* để mọi tầng khác dùng được mà không
-   kéo package.
+1. **Immutable results**: `Detection`/`ScanResult` are records — safe to pass across threads;
+   nobody mutates someone else's result.
+2. **Validate-recover, not throw**: `ScanLimits.Validate()` normalizes illogical values (<= 0,
+   int overflow) back to safe defaults — scanning continues instead of crashing (behavior locked
+   by `Program.ScanOptionsTests.cs`, including the negative `MaxFileSize` overflow case).
+3. **Single configuration point**: root-level `Directory.Build.props` applies to every project;
+   this project deliberately declares nothing extra so it inherits (`Nullable`,
+   `TreatWarningsAsErrors`).
+4. **No external dependencies**: keeps this project payload-free so every other layer can use it
+   without pulling packages.
 
-## 4. Kiểm thử
+## 4. Testing
 
-Được phủ gián tiếp qua **mọi** suite trong `tests/ClamGuard.Tests` (mọi pipeline đều đi qua
-`ScanOptions`/`ScanLimits`/`ScanVerdict`), và trực tiếp qua `Program.ScanOptionsTests.cs`
-(24 assertion: defaults so với ClamAV 1.5.x, merge limits, PUA precedence, exclusion semantics,
-normalization overflow/2 GiB ceiling…).
+Covered indirectly by **every** suite in `tests/ClamGuard.Tests` (all pipelines flow through
+`ScanOptions`/`ScanLimits`/`ScanVerdict`) and directly by `Program.ScanOptionsTests.cs`
+(24 assertions: defaults vs ClamAV 1.5.x, limit merging, PUA precedence, exclusion semantics,
+normalization overflow/2 GiB ceiling...).
