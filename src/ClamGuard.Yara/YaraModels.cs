@@ -26,7 +26,13 @@ public sealed record YaraRule(
     IReadOnlyList<YaraStringDefinition> Strings,
     string Condition);
 
-public sealed record YaraMatch(string RuleName, long? Offset, string? StringIdentifier, string RuleFile);
+public sealed record YaraMatch(string RuleName, long? Offset, string? StringIdentifier, string RuleFile)
+{
+    /// <summary>
+    /// Warnings about unsupported constructs in the matched rule; empty when the rule is fully supported.
+    /// </summary>
+    public IReadOnlyList<string> Warnings { get; init; } = Array.Empty<string>();
+}
 
 public sealed class YaraScanOptions
 {
