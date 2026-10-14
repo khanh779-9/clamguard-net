@@ -25,10 +25,13 @@ public sealed class CdiffPatchApplier
 
         var patch = await File.ReadAllBytesAsync(patchFile, cancellationToken);
         var parsed = ParsePatch(patch);
+        // The digest covers the patch bytes preceding the signature footer, so verification
+        // is positionally possible before any decompression work on untrusted input.
         if (!ClamGuard.Database.ClamAvSignatureVerifier.VerifyCdiffSha256Pss2(parsed.PayloadDigest, parsed.DigitalSignature))
             throw new InvalidDataException("CDIFF digital signature verification failed.");
 
-        ApplyCommands(parsed.Script, Path.GetFullPath(workingDirectory), cancellationToken);
+        var script = DecompressScript(patch, parsed.ScriptStart, parsed.ScriptLength, parsed.ExpectedScriptBytes);
+        ApplyCommands(script, Path.GetFullPath(workingDirectory), cancellationToken);
     }
 
     private static ParsedPatch ParsePatch(byte[] patch)
@@ -45,6 +48,8 @@ public sealed class CdiffPatchApplier
             throw new InvalidDataException("Invalid CDIFF version.");
         if (!uint.TryParse(fields[2], out var expectedScriptBytes))
             throw new InvalidDataException("Invalid CDIFF uncompressed length.");
+        if (expectedScriptBytes > MaxScriptBytes)
+            throw new InvalidDataException("CDIFF declared script length exceeds the supported maximum.");
 
         var footerColon = Array.LastIndexOf(patch, (byte)':');
         if (footerColon <= headerEnd || footerColon + 1 >= patch.Length)
@@ -53,16 +58,26 @@ public sealed class CdiffPatchApplier
         if (signature.Length == 0 || signature.Length > 700)
             throw new InvalidDataException("Malformed CDIFF signature.");
 
-        using var compressed = new MemoryStream(patch, headerEnd + 1, footerColon - headerEnd - 1, writable: false);
+        var digest = System.Security.Cryptography.SHA256.HashData(patch.AsSpan(0, footerColon));
+        return new ParsedPatch(version, headerEnd + 1, footerColon - headerEnd - 1, expectedScriptBytes, digest, signature);
+    }
+
+    private static byte[] DecompressScript(byte[] patch, int scriptStart, int scriptLength, uint expectedScriptBytes)
+    {
+        using var compressed = new MemoryStream(patch, scriptStart, scriptLength, writable: false);
         using var gzip = new System.IO.Compression.GZipStream(compressed, System.IO.Compression.CompressionMode.Decompress, leaveOpen: false);
         using var output = new MemoryStream((int)Math.Min((long)expectedScriptBytes, MaxScriptBytes));
-        gzip.CopyTo(output, 64 * 1024);
-        if (output.Length > MaxScriptBytes || output.Length != expectedScriptBytes)
+        var buffer = new byte[64 * 1024];
+        int read;
+        while ((read = gzip.Read(buffer, 0, buffer.Length)) > 0)
+        {
+            if (output.Length + read > MaxScriptBytes)
+                throw new InvalidDataException("CDIFF decompressed script exceeds the maximum supported size.");
+            output.Write(buffer, 0, read);
+        }
+        if (output.Length != expectedScriptBytes)
             throw new InvalidDataException("CDIFF decompressed script length does not match the header.");
-
-        var script = output.ToArray();
-        var digest = System.Security.Cryptography.SHA256.HashData(patch.AsSpan(0, footerColon));
-        return new ParsedPatch(version, script, digest, signature);
+        return output.ToArray();
     }
 
     private static int FindThirdColon(byte[] patch)
@@ -100,6 +115,7 @@ public sealed class CdiffPatchApplier
     }
 
     private static readonly System.Text.UTF8Encoding strictUtf8Fallback = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
+    private static readonly string[] NewlineSeparators = ["\r\n", "\n"];
 
     private static void ExecuteCommand(Context ctx, string line, int lineNo)
     {
@@ -156,30 +172,41 @@ public sealed class CdiffPatchApplier
 
         if (ctx.Edits.Count > 0)
         {
-            var source = File.ReadAllLines(path, strictUtf8Fallback);
+            var text = File.ReadAllText(path, strictUtf8Fallback);
+            var newline = DetectNewline(text);
+            var source = SplitLines(text);
             var temp = path + $".{Guid.NewGuid():N}.tmp";
             try
             {
-                using var writer = new StreamWriter(temp, false, new System.Text.UTF8Encoding(false));
-                var editIndex = 0;
-                var ordered = ctx.Edits.Values.OrderBy(x => x.LineNumber).ToArray();
-                foreach (var (line, index) in source.Select((value, index) => (value, index + 1)))
+                // The writer must be disposed before the replace: File.Replace cannot
+                // swap the temp file while its handle is still open.
+                using (var writer = new StreamWriter(temp, false, new System.Text.UTF8Encoding(false)))
                 {
-                    if (editIndex < ordered.Length && ordered[editIndex].LineNumber == index)
+                    var editIndex = 0;
+                    var ordered = ctx.Edits.Values.OrderBy(x => x.LineNumber).ToArray();
+                    foreach (var (line, index) in source.Select((value, index) => (value, index + 1)))
                     {
-                        var edit = ordered[editIndex++];
-                        if (!line.StartsWith(edit.Original, StringComparison.Ordinal))
-                            throw Error(lineNo, $"Edit pattern did not match line {index} in '{name}'.");
-                        if (edit.Replacement is not null) writer.WriteLine(edit.Replacement);
+                        if (editIndex < ordered.Length && ordered[editIndex].LineNumber == index)
+                        {
+                            var edit = ordered[editIndex++];
+                            if (!line.StartsWith(edit.Original, StringComparison.Ordinal))
+                                throw Error(lineNo, $"Edit pattern did not match line {index} in '{name}'.");
+                            if (edit.Replacement is not null)
+                            {
+                                writer.Write(edit.Replacement);
+                                writer.Write(newline);
+                            }
+                        }
+                        else
+                        {
+                            writer.Write(line);
+                            writer.Write(newline);
+                        }
                     }
-                    else
-                    {
-                        writer.WriteLine(line);
-                    }
+                    if (editIndex != ordered.Length)
+                        throw Error(lineNo, $"Not all edits for '{name}' were applied.");
+                    writer.Flush();
                 }
-                if (editIndex != ordered.Length)
-                    throw Error(lineNo, $"Not all edits for '{name}' were applied.");
-                writer.Flush();
                 ReplaceFile(temp, path);
             }
             catch
@@ -190,7 +217,7 @@ public sealed class CdiffPatchApplier
         }
 
         if (ctx.Additions.Count > 0)
-            File.AppendAllLines(path, ctx.Additions, new System.Text.UTF8Encoding(false));
+            WriteLines(path, append: true, ctx.Additions, PeekNewline(path));
         ctx.OpenDatabase = null;
         ctx.Edits.Clear();
         ctx.Additions.Clear();
@@ -210,16 +237,18 @@ public sealed class CdiffPatchApplier
         var dst = SafeCombine(ctx.WorkingDirectory, dstName, lineNo);
         if (!File.Exists(src) || !File.Exists(dst)) throw Error(lineNo, "MOVE source or destination does not exist.");
 
-        var lines = File.ReadAllLines(src, strictUtf8Fallback);
+        var srcText = File.ReadAllText(src, strictUtf8Fallback);
+        var newline = DetectNewline(srcText);
+        var lines = SplitLines(srcText);
         if (start > lines.Length || end > lines.Length) throw Error(lineNo, "MOVE range exceeds source file.");
         if (!lines[start - 1].StartsWith(parts[3], StringComparison.Ordinal) || !lines[end - 1].StartsWith(parts[5], StringComparison.Ordinal))
             throw Error(lineNo, "MOVE boundary pattern did not match.");
 
-        File.AppendAllLines(dst, lines.Skip(start - 1).Take(end - start + 1), new System.Text.UTF8Encoding(false));
+        WriteLines(dst, append: true, lines.Skip(start - 1).Take(end - start + 1), PeekNewline(dst));
         var temp = src + $".{Guid.NewGuid():N}.tmp";
         try
         {
-            File.WriteAllLines(temp, lines.Take(start - 1).Concat(lines.Skip(end)), new System.Text.UTF8Encoding(false));
+            WriteLines(temp, append: false, lines.Take(start - 1).Concat(lines.Skip(end)), newline);
             ReplaceFile(temp, src);
         }
         catch
@@ -237,6 +266,40 @@ public sealed class CdiffPatchApplier
         var path = SafeCombine(ctx.WorkingDirectory, name, lineNo);
         if (!File.Exists(path)) throw Error(lineNo, $"Database file '{name}' does not exist.");
         File.Delete(path);
+    }
+
+    private static string DetectNewline(string text)
+        => text.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n";
+
+    private static string PeekNewline(string path)
+    {
+        if (!File.Exists(path)) return "\n";
+        using var stream = File.OpenRead(path);
+        if (stream.Length < 2) return "\n";
+        stream.Seek(-2, SeekOrigin.End);
+        Span<byte> tail = stackalloc byte[2];
+        if (stream.Read(tail) == 2 && tail[0] == (byte)'\r' && tail[1] == (byte)'\n')
+            return "\r\n";
+        return "\n";
+    }
+
+    private static string[] SplitLines(string text)
+    {
+        if (text.Length == 0) return [];
+        var lines = text.Split(NewlineSeparators, StringSplitOptions.None);
+        if (text.EndsWith('\n') && lines.Length > 0)
+            Array.Resize(ref lines, lines.Length - 1);
+        return lines;
+    }
+
+    private static void WriteLines(string path, bool append, IEnumerable<string> lines, string newline)
+    {
+        using var writer = new StreamWriter(path, append, new System.Text.UTF8Encoding(false));
+        foreach (var line in lines)
+        {
+            writer.Write(line);
+            writer.Write(newline);
+        }
     }
 
     private static string ValidateName(string name, int lineNo)
@@ -286,5 +349,5 @@ public sealed class CdiffPatchApplier
     }
 
     private sealed record Edit(int LineNumber, string Original, string? Replacement);
-    private sealed record ParsedPatch(uint Version, byte[] Script, byte[] PayloadDigest, string DigitalSignature);
+    private sealed record ParsedPatch(uint Version, int ScriptStart, int ScriptLength, uint ExpectedScriptBytes, byte[] PayloadDigest, string DigitalSignature);
 }

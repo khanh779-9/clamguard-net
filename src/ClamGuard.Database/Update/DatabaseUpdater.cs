@@ -128,11 +128,66 @@ public sealed class DatabaseUpdater
     }
 
 
-    public Task ApplyCdiffAsync(string databaseDirectory, string patchFile, CancellationToken cancellationToken = default)
+    public async Task ApplyCdiffAsync(string databaseDirectory, string patchFile, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(databaseDirectory);
         ArgumentException.ThrowIfNullOrWhiteSpace(patchFile);
-        return new CdiffPatchApplier(_options.CertsDirectory).ApplyAsync(patchFile, Path.GetFullPath(databaseDirectory), cancellationToken);
+        var live = Path.TrimEndingDirectorySeparator(Path.GetFullPath(databaseDirectory));
+        if (!Directory.Exists(live)) throw new DirectoryNotFoundException(live);
+
+        // A mid-apply failure (e.g. an XCHG pattern mismatch) must never leave CLOSE-rewritten
+        // files behind in the live directory, so the patch is applied to a staging copy first.
+        var stagingParent = Path.GetDirectoryName(live);
+        if (string.IsNullOrEmpty(stagingParent)) stagingParent = Path.GetTempPath();
+        var staging = Path.Combine(stagingParent, $".cdiff-stage-{Guid.NewGuid():N}");
+        try
+        {
+            Directory.CreateDirectory(staging);
+            var original = Directory.EnumerateFiles(live, "*", SearchOption.AllDirectories)
+                .Select(file => Path.GetRelativePath(live, file))
+                .ToArray();
+            CopyDirectoryContents(live, staging);
+            await new CdiffPatchApplier(_options.CertsDirectory).ApplyAsync(patchFile, staging, cancellationToken);
+            PublishStagedDatabase(live, staging, original, cancellationToken);
+        }
+        finally
+        {
+            TryDeleteDirectory(staging);
+        }
+    }
+
+    private static void CopyDirectoryContents(string source, string destination)
+    {
+        foreach (var directory in Directory.EnumerateDirectories(source, "*", SearchOption.AllDirectories))
+            Directory.CreateDirectory(Path.Combine(destination, Path.GetRelativePath(source, directory)));
+        foreach (var file in Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories))
+            File.Copy(file, Path.Combine(destination, Path.GetRelativePath(source, file)), overwrite: false);
+    }
+
+    private static void PublishStagedDatabase(string live, string staging, string[] original, CancellationToken cancellationToken)
+    {
+        var staged = Directory.EnumerateFiles(staging, "*", SearchOption.AllDirectories)
+            .Select(file => Path.GetRelativePath(staging, file))
+            .ToArray();
+
+        foreach (var relative in staged)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var destination = Path.Combine(live, relative);
+            var destinationDirectory = Path.GetDirectoryName(destination);
+            if (!string.IsNullOrEmpty(destinationDirectory)) Directory.CreateDirectory(destinationDirectory);
+            File.Move(Path.Combine(staging, relative), destination, overwrite: true);
+        }
+
+        // Files removed inside staging (UNLINK) are removed from the live directory as well;
+        // files that only appeared after the copy was taken are left untouched.
+        var stagedSet = staged.ToHashSet(StringComparer.Ordinal);
+        foreach (var relative in original)
+        {
+            if (stagedSet.Contains(relative)) continue;
+            cancellationToken.ThrowIfCancellationRequested();
+            File.Delete(Path.Combine(live, relative));
+        }
     }
 
     private async Task<uint> DownloadAndReadHeaderAsync(Uri uri, string temp, CancellationToken cancellationToken)

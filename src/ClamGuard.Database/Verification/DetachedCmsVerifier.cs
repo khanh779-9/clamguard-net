@@ -17,6 +17,8 @@ public sealed record DetachedVerificationResult(
 
 public static class DetachedCmsVerifier
 {
+    private static readonly Lazy<string?> OpenSslExecutable = new(ResolveOpenSslExecutable);
+
     public static DetachedVerificationResult Verify(string signedFile, string signatureFile, string certsDirectory)
     {
         try
@@ -45,6 +47,11 @@ public static class DetachedCmsVerifier
             if (caBundle is null)
                 return new(DetachedVerificationStatus.Unavailable, null, "No PEM certificates were found in the certificate directory.");
 
+            var openssl = OpenSslExecutable.Value;
+            if (openssl is null)
+                return new(DetachedVerificationStatus.Unavailable, null,
+                    "No OpenSSL executable was found next to the application, in a well-known install directory, or on PATH; detached signature verification cannot proceed.");
+
             var tempDir = Path.Combine(Path.GetTempPath(), $"clamguard-cms-{Guid.NewGuid():N}");
             Directory.CreateDirectory(tempDir);
             try
@@ -57,7 +64,7 @@ public static class DetachedCmsVerifier
 
                 var psi = new ProcessStartInfo
                 {
-                    FileName = "openssl",
+                    FileName = openssl,
                     UseShellExecute = false,
                     RedirectStandardError = true,
                     RedirectStandardOutput = true,
@@ -79,13 +86,18 @@ public static class DetachedCmsVerifier
                 if (process is null)
                     return new(DetachedVerificationStatus.Unavailable, null, "OpenSSL could not be started.");
 
+                // Drain both pipes concurrently while waiting, otherwise a full pipe buffer
+                // can block the child process and deadlock the wait.
+                var errorTask = process.StandardError.ReadToEndAsync();
+                var outputTask = process.StandardOutput.ReadToEndAsync();
                 if (!process.WaitForExit(15_000))
                 {
                     try { process.Kill(entireProcessTree: true); } catch { }
                     return new(DetachedVerificationStatus.Unavailable, null, "Detached CMS verification timed out.");
                 }
 
-                var error = process.StandardError.ReadToEnd().Trim();
+                var error = errorTask.GetAwaiter().GetResult().Trim();
+                _ = outputTask.GetAwaiter().GetResult();
                 return process.ExitCode == 0
                     ? new(DetachedVerificationStatus.Verified, "Detached ClamAV CMS/PKCS#7", "Detached CMS signature verified.")
                     : new(DetachedVerificationStatus.Invalid, null,
@@ -100,10 +112,34 @@ public static class DetachedCmsVerifier
         {
             return new(DetachedVerificationStatus.Unavailable, null, "OpenSSL is unavailable.");
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException)
         {
             return new(DetachedVerificationStatus.Unavailable, null, ex.Message);
         }
+    }
+
+    private static string? ResolveOpenSslExecutable()
+    {
+        var fileName = OperatingSystem.IsWindows() ? "openssl.exe" : "openssl";
+        var candidates = new List<string> { Path.Combine(AppContext.BaseDirectory, fileName) };
+        if (OperatingSystem.IsWindows())
+        {
+            candidates.Add(@"C:\Program Files\OpenSSL-Win64\bin\openssl.exe");
+            candidates.Add(@"C:\Program Files\OpenSSL\bin\openssl.exe");
+        }
+        foreach (var candidate in candidates)
+        {
+            if (File.Exists(candidate)) return candidate;
+        }
+
+        var pathVariable = Environment.GetEnvironmentVariable("PATH");
+        if (string.IsNullOrWhiteSpace(pathVariable)) return null;
+        foreach (var directory in pathVariable.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var candidate = Path.Combine(directory, fileName);
+            if (File.Exists(candidate)) return candidate;
+        }
+        return null;
     }
 
     private static string? BuildCaBundle(string directory)

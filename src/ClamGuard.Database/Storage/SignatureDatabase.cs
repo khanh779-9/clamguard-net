@@ -13,17 +13,29 @@ public sealed class SignatureDatabase
     public IconDatabase? IconDatabase { get; internal set; }
     public SpecialDatabaseStore SpecialDatabases { get; } = new();
     public DynamicConfiguration DynamicConfiguration { get; internal set; } = new();
-    public bool HasSelfProtectionSignatures => _signatures.OfType<NdbSignature>().Any(static x => x.IsSelfProtection);
 
     private NdbSignature[]? _ndbCache;
     private LogicalSignature[]? _logicalCache;
     private MetadataSignature[]? _metadataCache;
     private CdbSignature[]? _cdbCache;
+    private HashSignature[]? _hashCache;
+    private bool? _selfProtectionCache;
 
     public NdbSignature[] NdbSignatures => _ndbCache ??= _signatures.OfType<NdbSignature>().ToArray();
     public LogicalSignature[] LogicalSignatures => _logicalCache ??= _signatures.OfType<LogicalSignature>().ToArray();
     public MetadataSignature[] MetadataSignatures => _metadataCache ??= _signatures.OfType<MetadataSignature>().ToArray();
     public CdbSignature[] CdbSignatures => _cdbCache ??= _signatures.OfType<CdbSignature>().ToArray();
+    public HashSignature[] HashSignatures => _hashCache ??= _signatures.OfType<HashSignature>().ToArray();
+
+    public bool HasSelfProtectionSignatures
+    {
+        get
+        {
+            if (_selfProtectionCache is null)
+                _selfProtectionCache = _signatures.OfType<NdbSignature>().Any(static x => x.IsSelfProtection);
+            return _selfProtectionCache.Value;
+        }
+    }
 
     public void Add(Signature signature)
     {
@@ -43,6 +55,8 @@ public sealed class SignatureDatabase
         _logicalCache = null;
         _metadataCache = null;
         _cdbCache = null;
+        _hashCache = null;
+        _selfProtectionCache = null;
     }
 
     public CompiledSignatureSet Compile()
@@ -52,6 +66,7 @@ public sealed class SignatureDatabase
         _ = LogicalSignatures;
         _ = MetadataSignatures;
         _ = CdbSignatures;
+        _ = HashSignatures;
 
         var compiled = new CompiledSignatureSet();
         foreach (var signature in _signatures) compiled.Add(signature);
