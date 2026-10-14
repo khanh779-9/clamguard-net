@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Linq;
 using System.Net.NetworkInformation;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
@@ -77,6 +78,38 @@ public sealed class SystemInspectorService
             ReadStartupItems());
     }
 
+    /// <summary>
+    /// A "valid" signature means the certificate chains to a trusted root with
+    /// chain building (revocation checked) AND carries the code-signing EKU — a
+    /// bare validity-window check would bless self-signed certificates.
+    /// </summary>
+    private static string DescribeSignatureState(X509Certificate2 cert)
+    {
+        if (DateTime.UtcNow < cert.NotBefore.ToUniversalTime() || DateTime.UtcNow > cert.NotAfter.ToUniversalTime())
+            return "Signed · certificate outside validity window";
+
+        var isCodeSigning = cert.Extensions.OfType<X509EnhancedKeyUsageExtension>()
+            .Any(e => e.EnhancedKeyUsages.Cast<Oid>().Any(o => o.Value == "1.3.6.1.5.5.7.3.3"));
+        if (!isCodeSigning)
+            return "Signed · certificate is not a code-signing certificate";
+
+        using var chain = new X509Chain
+        {
+            ChainPolicy = new X509ChainPolicy
+            {
+                RevocationMode = X509RevocationMode.Online,
+                RevocationFlag = X509RevocationFlag.ExcludeRoot,
+                VerificationFlags = X509VerificationFlags.NoFlag
+            }
+        };
+        if (!chain.Build(cert))
+        {
+            var status = chain.ChainStatus.Length > 0 ? chain.ChainStatus[0].StatusInformation.TrimEnd('.') : "untrusted";
+            return $"Signed · chain not trusted ({status})";
+        }
+        return "Signed · certificate valid (chain trusted)";
+    }
+
     public FileInspectionResult InspectFile(string path)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
@@ -95,9 +128,7 @@ public sealed class SystemInspectorService
         {
             var cert = new X509Certificate2(X509Certificate.CreateFromSignedFile(full));
             signatureSubject = cert.Subject;
-            signatureStatus = DateTime.UtcNow <= cert.NotAfter.ToUniversalTime() && DateTime.UtcNow >= cert.NotBefore.ToUniversalTime()
-                ? "Signed · certificate valid"
-                : "Signed · certificate outside validity window";
+            signatureStatus = DescribeSignatureState(cert);
         }
         catch (CryptographicException)
         {

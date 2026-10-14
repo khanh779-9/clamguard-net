@@ -58,7 +58,11 @@ public sealed class MemoryScanService
             var name = SafeProcessName(process);
             progress($"{name} ({i + 1}/{processes.Length})");
 
-            var (regions, opened) = ReadProcessRegions(process, token);
+            // Budget must gate collection, not just scanning: materializing
+            // every region of every process first allowed ~MaxBytes×Processes
+            // of transient byte[] to pile up before the check ran.
+            var collectionBudget = (long)Math.Min(MaxBytesPerProcess, Volatile.Read(ref remainingBudget));
+            var (regions, opened) = ReadProcessRegions(process, collectionBudget, token);
             if (!opened || regions.Count == 0)
             {
                 skippedProcesses++;
@@ -91,6 +95,11 @@ public sealed class MemoryScanService
             progress($"{name} ({i + 1}/{processes.Length}) · {scannedRegions} regions");
         }
 
+        // Process handles are never released by GetProcesses() itself; without
+        // this the scan leaks a handle per process per run.
+        foreach (var process in processes)
+            process.Dispose();
+
         return new MemoryScanSummary(
             processes.Length,
             scannedProcesses,
@@ -104,8 +113,7 @@ public sealed class MemoryScanService
         try { return process.ProcessName; }
         catch { return $"pid{process.Id}"; }
     }
-
-    private static (List<(string Label, byte[] Data)> Regions, bool Opened) ReadProcessRegions(Process process, CancellationToken token)
+    private static (List<(string Label, byte[] Data)> Regions, bool Opened) ReadProcessRegions(Process process, long collectionBudget, CancellationToken token)
     {
         var regions = new List<(string, byte[])>();
         var handle = NativeMethods.OpenProcess(ProcessVmRead | ProcessQueryInformation, false, process.Id);
@@ -120,6 +128,8 @@ public sealed class MemoryScanService
             while (address < MaxUserAddress)
             {
                 token.ThrowIfCancellationRequested();
+                if (processBytes >= collectionBudget)
+                    break;
                 if (!NativeMethods.VirtualQueryEx(handle, (IntPtr)address, out var mbi, (IntPtr)Marshal.SizeOf<NativeMethods.MemoryBasicInformation>()))
                     break;
 
@@ -138,7 +148,7 @@ public sealed class MemoryScanService
                     continue;
 
                 var length = (int)Math.Min(regionSize, MaxRegionBytes);
-                if (length <= 0 || processBytes + length > MaxBytesPerProcess)
+                if (length <= 0 || processBytes + length > Math.Min(MaxBytesPerProcess, collectionBudget))
                     continue;
 
                 var data = new byte[length];

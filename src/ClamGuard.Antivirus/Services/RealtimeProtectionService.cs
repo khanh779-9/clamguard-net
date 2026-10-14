@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.IO;
 using System.Collections.Concurrent;
 using ClamGuard.Core;
@@ -7,11 +8,14 @@ namespace ClamGuard.Antivirus.Services;
 
 public sealed class RealtimeProtectionService : IAsyncDisposable
 {
+    private const int MaxRecoveryReschedules = 500;
+
     private readonly AntivirusEngineService _engine;
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _debounce = new(StringComparer.OrdinalIgnoreCase);
     private FileSystemWatcher? _watcher;
     private int _enabled;
     private int _disposed;
+    private int _generation;
 
     public RealtimeProtectionService(AntivirusEngineService engine) => _engine = engine;
 
@@ -33,7 +37,10 @@ public sealed class RealtimeProtectionService : IAsyncDisposable
         {
             IncludeSubdirectories = true,
             NotifyFilter = NotifyFilters.FileName | NotifyFilters.CreationTime | NotifyFilters.LastWrite | NotifyFilters.Size,
-            Filter = "*"
+            Filter = "*",
+            // The default 8 KiB buffer overflows during write bursts and drops
+            // events; 64 KiB makes that far less likely on busy directories.
+            InternalBufferSize = 64 * 1024
         };
         _watcher.Created += OnChanged;
         _watcher.Changed += OnChanged;
@@ -59,11 +66,15 @@ public sealed class RealtimeProtectionService : IAsyncDisposable
             _watcher = null;
         }
 
+        // Cancel only, do not dispose: a scan task that already passed its delay
+        // still reads its token, so disposing here would turn its benign
+        // cancellation into an ObjectDisposedException. Each task disposes its
+        // own CTS in its finally block while it is still the dictionary entry;
+        // anything left over is just garbage-collected.
         foreach (var pair in _debounce.ToArray())
         {
             if (_debounce.TryRemove(pair.Key, out var cts))
                 cts.Cancel();
-            cts?.Dispose();
         }
     }
 
@@ -77,22 +88,35 @@ public sealed class RealtimeProtectionService : IAsyncDisposable
         if (Path.GetFileName(path).StartsWith(".", StringComparison.Ordinal)) return;
 
         var cts = new CancellationTokenSource();
+        var generation = Interlocked.Increment(ref _generation);
         _ = _debounce.AddOrUpdate(path, cts, (_, old) =>
         {
+            // Cancel without dispose: the superseded task may still be reading
+            // its token; stale instances are released by their own task's
+            // finally block or the GC.
             old.Cancel();
-            old.Dispose();
             return cts;
         });
-        _ = ScanAfterDelayAsync(path, cts);
+        _ = ScanAfterDelayAsync(path, cts, generation);
     }
 
-    private async Task ScanAfterDelayAsync(string path, CancellationTokenSource cts)
+    private async Task ScanAfterDelayAsync(string path, CancellationTokenSource cts, int generation)
     {
         try
         {
             await Task.Delay(900, cts.Token).ConfigureAwait(false);
+            if (!IsCurrentEntry(path, cts))
+            {
+                Trace.WriteLine($"[ClamGuard] Realtime scan of '{path}' (generation {generation}) superseded before start; skipped.");
+                return;
+            }
             if (!await WaitUntilReadableAsync(path, cts.Token).ConfigureAwait(false)) return;
             var result = await _engine.ScanFileAsync(path, cts.Token).ConfigureAwait(false);
+            if (!IsCurrentEntry(path, cts))
+            {
+                Trace.WriteLine($"[ClamGuard] Realtime scan of '{path}' (generation {generation}) superseded while scanning; duplicate result dropped.");
+                return;
+            }
             ScanCompleted?.Invoke(this, result);
         }
         catch (OperationCanceledException)
@@ -109,7 +133,10 @@ public sealed class RealtimeProtectionService : IAsyncDisposable
         }
     }
 
-    private static async Task<bool> WaitUntilReadableAsync(string path, CancellationToken token)
+    private bool IsCurrentEntry(string path, CancellationTokenSource cts)
+        => _debounce.TryGetValue(path, out var current) && ReferenceEquals(current, cts);
+
+    private async Task<bool> WaitUntilReadableAsync(string path, CancellationToken token)
     {
         long previousLength = -1;
         for (var attempt = 0; attempt < 5; attempt++)
@@ -134,11 +161,67 @@ public sealed class RealtimeProtectionService : IAsyncDisposable
                 await Task.Delay(350, token).ConfigureAwait(false);
             }
         }
+
+        Error?.Invoke(this, $"Realtime scan skipped: '{path}' did not become readable after 5 attempts.");
         return false;
     }
 
     private void OnWatcherError(object sender, ErrorEventArgs e)
-        => Error?.Invoke(this, $"Realtime protection watcher error: {e.GetException().Message}");
+    {
+        Error?.Invoke(this, $"Realtime protection watcher error: {e.GetException().Message}");
+        var directory = WatchedDirectory;
+        if (directory is null) return;
+
+        // A watcher error is almost always an event-buffer overflow, i.e. events
+        // were silently dropped. Restart the watcher first so nothing new is
+        // missed, then best-effort reschedule recent existing files.
+        try
+        {
+            Stop();
+            Start(directory);
+        }
+        catch (Exception ex)
+        {
+            Error?.Invoke(this, $"Realtime protection could not restart the watcher for '{directory}': {ex.Message}");
+            return;
+        }
+
+        RescheduleRecentFiles(directory);
+    }
+
+    private void RescheduleRecentFiles(string directory)
+    {
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                var recent = new List<FileInfo>();
+                foreach (var file in new DirectoryInfo(directory).EnumerateFiles(
+                             "*",
+                             new EnumerationOptions
+                             {
+                                 RecurseSubdirectories = true,
+                                 IgnoreInaccessible = true
+                             }))
+                {
+                    recent.Add(file);
+                }
+
+                // Bounded to keep a huge tree from storming the engine; Schedule
+                // itself re-filters deleted files, dotfiles and the DB directory.
+                foreach (var file in recent
+                             .OrderByDescending(static f => f.LastWriteTimeUtc)
+                             .Take(MaxRecoveryReschedules))
+                {
+                    Schedule(file.FullName);
+                }
+            }
+            catch (Exception ex)
+            {
+                Error?.Invoke(this, $"Realtime protection recovery rescan failed for '{directory}': {ex.Message}");
+            }
+        });
+    }
 
     private void ThrowIfDisposed()
     {

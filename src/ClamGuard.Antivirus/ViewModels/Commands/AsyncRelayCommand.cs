@@ -24,7 +24,12 @@ internal sealed class AsyncRelayCommand : ICommand
         if (Interlocked.Exchange(ref _running, 1) != 0) return;
         CanExecuteChanged?.Invoke(this, EventArgs.Empty);
         try { await _execute(); }
-        catch { /* UI caller owns user-facing error policy. */ }
+        catch (Exception ex)
+        {
+            // The UI caller owns user-facing error policy, but the failure must
+            // not vanish: log so global handlers/trace show what was swallowed.
+            System.Diagnostics.Trace.WriteLine($"[ClamGuard] AsyncRelayCommand error: {ex}");
+        }
         finally
         {
             Volatile.Write(ref _running, 0);

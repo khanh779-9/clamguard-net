@@ -536,7 +536,15 @@ public partial class MainWindow : ClamGuardWindow
         }
     }
 
-    private static string Csv(string value) => "\"" + value.Replace("\"", "\"\"", StringComparison.Ordinal) + "\"";
+    private static string Csv(string value)
+    {
+        var escaped = "\"" + value.Replace("\"", "\"\"", StringComparison.Ordinal) + "\"";
+        // Neutralize spreadsheet formula injection (=, +, -, @, tab/CR prefixes)
+        // from attacker-controlled file/threat names opened in Excel.
+        return escaped.Length > 1 && escaped[1] is '=' or '+' or '-' or '@' or '\t' or '\r'
+            ? "\"'" + escaped[1..]
+            : escaped;
+    }
 
     private void RestoreRealtimePath()
         => _viewModel.RealtimePath = string.IsNullOrWhiteSpace(App.Settings.RealtimeDirectory)

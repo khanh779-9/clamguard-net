@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.IO;
 using System.Text.Json;
 
@@ -9,24 +10,49 @@ public sealed class JsonSettingsStore
 
     public AppSettings Load()
     {
+        var settings = TryRead(AppPaths.SettingsFile);
+        if (settings is null)
+        {
+            // A leftover .tmp means a previous atomic save was interrupted
+            // mid-write; prefer its contents over resetting to defaults.
+            settings = TryRead(AppPaths.SettingsFile + ".tmp");
+        }
+
+        if (settings is null) return new AppSettings();
+
+        if (string.IsNullOrWhiteSpace(settings.DatabaseDirectory) ||
+            settings.DatabaseDirectory.Contains(@"AppData\Local\ClamGuard", StringComparison.OrdinalIgnoreCase))
+        {
+            settings.DatabaseDirectory = AppPaths.DatabaseDirectory;
+        }
+        if (settings.RealtimeDirectory is null) settings.RealtimeDirectory = string.Empty;
+        settings.Theme = string.Equals(settings.Theme, "Light", StringComparison.OrdinalIgnoreCase) ? "Light" : "Dark";
+        return settings;
+    }
+
+    private static AppSettings? TryRead(string path)
+    {
         try
         {
             AppPaths.EnsureDirectories();
-            if (!File.Exists(AppPaths.SettingsFile)) return new AppSettings();
-            var json = File.ReadAllText(AppPaths.SettingsFile);
-            var settings = JsonSerializer.Deserialize<AppSettings>(json) ?? new AppSettings();
-            if (string.IsNullOrWhiteSpace(settings.DatabaseDirectory) ||
-                settings.DatabaseDirectory.Contains(@"AppData\Local\ClamGuard", StringComparison.OrdinalIgnoreCase))
+            if (!File.Exists(path)) return null;
+            var json = File.ReadAllText(path);
+            var settings = JsonSerializer.Deserialize<AppSettings>(json);
+            if (settings is null)
             {
-                settings.DatabaseDirectory = AppPaths.DatabaseDirectory;
+                Debug.WriteLine($"[ClamGuard] Settings file '{path}' is empty or invalid; ignored.");
+                return null;
             }
-            if (settings.RealtimeDirectory is null) settings.RealtimeDirectory = string.Empty;
-            settings.Theme = string.Equals(settings.Theme, "Light", StringComparison.OrdinalIgnoreCase) ? "Light" : "Dark";
             return settings;
+        }
+        catch (JsonException ex)
+        {
+            Debug.WriteLine($"[ClamGuard] Settings file '{path}' could not be parsed: {ex.Message}");
+            return null;
         }
         catch
         {
-            return new AppSettings();
+            return null;
         }
     }
 
@@ -36,7 +62,9 @@ public sealed class JsonSettingsStore
         {
             AppPaths.EnsureDirectories();
             var json = JsonSerializer.Serialize(settings, Options);
-            File.WriteAllText(AppPaths.SettingsFile, json);
+            var temp = AppPaths.SettingsFile + ".tmp";
+            File.WriteAllText(temp, json);
+            File.Move(temp, AppPaths.SettingsFile, overwrite: true);
         }
         catch
         {

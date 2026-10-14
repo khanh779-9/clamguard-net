@@ -15,7 +15,8 @@ public sealed class AntivirusEngineService : IAsyncDisposable
     private readonly ScannerEngine _scanner;
     private readonly ScanHost _host;
     private readonly DatabaseUpdater _updater;
-    private int _initialized;
+    private readonly object _initializationGate = new();
+    private Task? _initialization;
 
     public AntivirusEngineService()
     {
@@ -47,21 +48,24 @@ public sealed class AntivirusEngineService : IAsyncDisposable
     public ScanMetricsSnapshot Metrics => _host.GetMetrics();
     public DatabaseInfo? CurrentDatabase => _databaseManager.Current.Database.Databases.FirstOrDefault();
 
-    public async Task InitializeAsync(CancellationToken cancellationToken = default)
+    public Task InitializeAsync(CancellationToken cancellationToken = default)
     {
-        if (Interlocked.Exchange(ref _initialized, 1) != 0) return;
+        // Async single-flight: every concurrent caller awaits the same task
+        // instead of an early-return flag set before initialization finishes.
+        // A faulted task is replaced on the next call so startup can retry.
+        lock (_initializationGate)
+        {
+            if (_initialization is null || _initialization.IsFaulted || _initialization.IsCanceled)
+                _initialization = InitializeCoreAsync(cancellationToken);
+            return _initialization;
+        }
+    }
+
+    private async Task InitializeCoreAsync(CancellationToken cancellationToken)
+    {
         AppPaths.EnsureDirectories();
         Directory.CreateDirectory(DatabaseDirectory);
-        try
-        {
-            await ReloadDatabaseAsync(cancellationToken).ConfigureAwait(false);
-            Volatile.Write(ref _initialized, 1);
-        }
-        catch
-        {
-            Volatile.Write(ref _initialized, 0);
-            throw;
-        }
+        await ReloadDatabaseAsync(cancellationToken).ConfigureAwait(false);
     }
 
     public Task ReloadDatabaseAsync(CancellationToken cancellationToken = default)
@@ -136,36 +140,20 @@ public sealed class AntivirusEngineService : IAsyncDisposable
             MaxDegreeOfParallelism = maxParallelism
         };
 
-        try
+        await Parallel.ForEachAsync(files, parallelOptions, async (file, ct) =>
         {
-            await Parallel.ForEachAsync(files, parallelOptions, async (file, ct) =>
-            {
-                var result = await ScanFileAsync(file, scanOptions, ct).ConfigureAwait(false);
-                results.Add(result);
-                var currentCompleted = Interlocked.Increment(ref completed);
-                var includeResult = !scanOptions.InfectedOnly ||
-                    result.Verdict is ScanVerdict.Malicious or ScanVerdict.PotentiallyUnwanted or ScanVerdict.StrongIndicator or ScanVerdict.Error or ScanVerdict.Timeout;
-                if (scanOptions.ShowProgress)
-                    progress?.Report(new ScanProgress(file, currentCompleted, total, includeResult ? result : null));
-                if (scanOptions.Verbose)
-                    System.Diagnostics.Trace.WriteLine($"[ClamGuard] {result.Verdict}: {file} ({result.Duration.TotalMilliseconds:F0} ms)");
-            }).ConfigureAwait(false);
-        }
-        finally
-        {
-            GC.Collect(2, GCCollectionMode.Aggressive, blocking: false);
-            if (OperatingSystem.IsWindows())
-            {
-                try
-                {
-                    EmptyWorkingSet(System.Diagnostics.Process.GetCurrentProcess().Handle);
-                }
-                catch
-                {
-                    // Non-critical optimization
-                }
-            }
-        }
+            var result = await ScanFileAsync(file, scanOptions, ct).ConfigureAwait(false);
+            results.Add(result);
+            var currentCompleted = Interlocked.Increment(ref completed);
+            var includeResult = !scanOptions.InfectedOnly ||
+                result.Verdict is ScanVerdict.Malicious or ScanVerdict.PotentiallyUnwanted or ScanVerdict.StrongIndicator or ScanVerdict.Error or ScanVerdict.Timeout;
+            if (scanOptions.ShowProgress)
+                progress?.Report(new ScanProgress(file, currentCompleted, total, includeResult ? result : null));
+            if (scanOptions.Verbose)
+                System.Diagnostics.Trace.WriteLine($"[ClamGuard] {result.Verdict}: {file} ({result.Duration.TotalMilliseconds:F0} ms)");
+        }).ConfigureAwait(false);
+        // No GC.Collect/EmptyWorkingSet after scans (stop-the-world + hard page-out);
+        // steady-state memory belongs to scanner buffer pooling.
 
         foreach (var inaccessiblePath in enumeration.Errors)
         {
@@ -230,10 +218,12 @@ public sealed class AntivirusEngineService : IAsyncDisposable
         var pending = new Stack<string>();
         var pathComparer = OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
         var visitedDirectories = new HashSet<string>(pathComparer);
+        var limitReached = false;
         pending.Push(root);
 
         while (pending.Count != 0)
         {
+            if (limitReached) break;
             cancellationToken.ThrowIfCancellationRequested();
             var current = pending.Pop();
             if (options.IsExcludedDirectory(current, root)) continue;
@@ -268,6 +258,13 @@ public sealed class AntivirusEngineService : IAsyncDisposable
 
                     if (isLink && !options.FollowSymlinks) continue;
                     if (options.IsExcludedExtension(entry)) continue;
+                    if (files.Count == options.MaxFiles)
+                    {
+                        // Streaming cap: stop walking as soon as the MaxFiles
+                        // ceiling is hit instead of buffering unbounded.
+                        limitReached = true;
+                        break;
+                    }
                     files.Add(Path.GetFullPath(entry));
                 }
             }
@@ -277,7 +274,7 @@ public sealed class AntivirusEngineService : IAsyncDisposable
 
         return (files.Distinct(pathComparer)
                 .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
-                .ToArray(), false,
+                .ToArray(), limitReached,
             DistinctPaths(errors, pathComparer));
     }
 
@@ -327,7 +324,4 @@ public sealed class AntivirusEngineService : IAsyncDisposable
     {
         await _host.DisposeAsync().ConfigureAwait(false);
     }
-
-    [System.Runtime.InteropServices.DllImport("psapi.dll", SetLastError = true)]
-    private static extern bool EmptyWorkingSet(nint hProcess);
 }

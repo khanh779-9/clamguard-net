@@ -63,10 +63,15 @@ public partial class MainWindow
             switch (action)
             {
                 case "Delete":
+                    // A destructive realtime action must stay recoverable from a
+                    // false positive: removing the file from its original
+                    // location goes through quarantine (the sealed copy stays
+                    // in the store for manual permanent deletion).
                     if (File.Exists(result.FilePath))
                     {
-                        File.Delete(result.FilePath);
-                        ShowToast(App.Localization.Get("toast.deleted"), fileName, ToastKind.Warning);
+                        await _viewModel.QuarantineFileAsync(result.FilePath, detection, _lifetimeCts.Token);
+                        _viewModel.RefreshQuarantine();
+                        ShowToast(App.Localization.Get("quarantine.quarantined"), fileName, ToastKind.Warning);
                     }
                     break;
 
