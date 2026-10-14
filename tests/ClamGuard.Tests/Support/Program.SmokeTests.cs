@@ -149,7 +149,6 @@ internal static partial class Program
             var xdpFile = Path.Combine(root, "embedded.xdp");
             await File.WriteAllTextAsync(xdpFile, xdp);
             var xdpResult = new ClamGuard.Scanner.ScannerEngine(xdpManager).Scan(xdpFile);
-            Console.WriteLine($"XDP DEBUG: FileType='{xdpResult.FileType}', Verdict={xdpResult.Verdict}, Detections={string.Join(", ", xdpResult.Detections.Select(x => x.Name))}");
             Assert(xdpResult.FileType == "XDP" && xdpResult.Detections.Any(x => x.Name == "Special.XdpPdf"),
                 "XDP decodes PDF chunk only after native-style marker gate");
 

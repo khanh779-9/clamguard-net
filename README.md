@@ -106,7 +106,7 @@ By default, the application stores its database and cache under the common appli
 - Bytecode files: `%ProgramData%\ClamGuard\bytecode`
 - Per-user settings: `%LocalAppData%\ClamGuard\Antivirus\settings.json`
 
-The database directory can be changed in application settings. Use valid database files from an authorized source. The small files under `samples/database/` are test fixtures, not a production malware database.
+The database directory can be changed in application settings. Use valid database files from an authorized source; this repository ships no malware database at all — the regression harness generates its own fixtures at runtime.
 
 ## Optional real-sample regression check
 
@@ -156,8 +156,6 @@ ClamGuard.Net.sln
 │   │   └── Patterns/              Hex-pattern atoms and matching logic
 │   └── ClamGuard.Yara/            Managed YARA-compatible subset
 ├── tests/ClamGuard.Tests/         Executable regression harness and fixtures
-├── samples/                       Tiny non-production parser/matcher fixtures
-├── scripts/                       Repository verification helpers
 ├── Directory.Build.props           Shared compiler and build settings
 ├── global.json                    .NET SDK selection
 └── README.md
