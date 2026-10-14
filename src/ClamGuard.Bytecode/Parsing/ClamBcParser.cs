@@ -199,6 +199,9 @@ internal sealed class ClamBcParser
         _ = ReadNumber(line, ref offset); // return type
         if (offset >= line.Length || line[offset++] != 'L') throw new FormatException("Missing locals header");
         var locals = checked((int)ReadNumber(line, ref offset));
+        // A malformed .cbc must not force an unbounded allocation here; real
+        // ClamAV bytecode functions use far fewer locals than this ceiling.
+        if (locals is < 0 or > 65536) throw new FormatException("Unsafe function locals count");
         var total = checked(args + locals);
         var localTypes = new int[total];
         for (var i = 0; i < total; i++)

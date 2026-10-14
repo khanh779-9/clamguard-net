@@ -95,12 +95,15 @@ public sealed class ClamBcEngine
         options ??= new BytecodeScanOptions();
         ValidateOptions(options);
         var results = new List<BytecodeMatch>();
+        // Copy once per scan; every program shares the same read-only buffer
+        // instead of each VM copying the whole file again.
+        var file = data.ToArray();
         foreach (var program in _programs)
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (!program.IsCompatible(options.EngineFunctionalityLevel)) continue;
-            if (!program.IsEligibleForFile(data)) continue;
-            var vm = new ClamBcVirtualMachine(program, data, options, cancellationToken);
+            if (!program.IsEligibleForFile(file)) continue;
+            var vm = new ClamBcVirtualMachine(program, file, options, cancellationToken);
             var result = vm.Run();
             if (!result.Matched) continue;
             results.Add(new BytecodeMatch(

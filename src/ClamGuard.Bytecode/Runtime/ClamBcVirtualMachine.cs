@@ -42,11 +42,13 @@ internal sealed partial class ClamBcVirtualMachine
     private int _pdfFlags;
     private int _pdfDumpedObjectId = -1;
 
-    public ClamBcVirtualMachine(ClamBcProgram program, ReadOnlySpan<byte> file, BytecodeScanOptions options, CancellationToken token)
+    public ClamBcVirtualMachine(ClamBcProgram program, ReadOnlyMemory<byte> file, BytecodeScanOptions options, CancellationToken token)
     {
         _program = program;
-        _file = file.ToArray();
-        _originalFile = _file;
+        // The file is only ever read (all pointer writes target fresh copies),
+        // so the scan buffer is shared across programs instead of copied.
+        _file = file;
+        _originalFile = file;
         _options = options;
         _token = token;
         InitializePdfContext();
@@ -58,6 +60,13 @@ internal sealed partial class ClamBcVirtualMachine
         {
             ExecuteFunction(0, Array.Empty<ulong>(), 0);
             return (_virusName is not null || _returnValue != 0, _virusName, _matchOffset, _returnValue, null);
+        }
+        catch (BytecodeBudgetExceededException ex)
+        {
+            // A program that exhausts its fuel/runtime budget must be skipped,
+            // not mistaken for user cancellation (which would abort the whole
+            // file scan).
+            return (false, null, null, 0, $"bytecode skipped: {ex.Message}");
         }
         catch (OperationCanceledException) { throw; }
         catch (Exception ex) when (ex is FormatException or InvalidOperationException or OverflowException or IndexOutOfRangeException or ArgumentException)
@@ -82,8 +91,8 @@ internal sealed partial class ClamBcVirtualMachine
             for (var pc = start; pc < end; pc++)
             {
                 _token.ThrowIfCancellationRequested();
-                if (++_executed > _options.MaxInstructions) throw new InvalidOperationException("instruction budget exceeded");
-                if ((_executed & 1023) == 0 && _runtime.Elapsed > _options.MaxRuntime) throw new OperationCanceledException("bytecode runtime budget exceeded", _token);
+                if (++_executed > _options.MaxInstructions) throw new BytecodeBudgetExceededException("instruction budget exceeded");
+                if ((_executed & 1023) == 0 && _runtime.Elapsed > _options.MaxRuntime) throw new BytecodeBudgetExceededException("runtime budget exceeded");
                 var inst = function.Instructions[pc];
                 switch (inst.Opcode)
                 {
@@ -229,7 +238,12 @@ internal sealed partial class ClamBcVirtualMachine
     }
 
     private ulong Bin(ClamBcInstruction inst, Dictionary<int, ulong> locals, Func<ulong, ulong, ulong> op)
-        => op(Get(inst.Operands[0], locals), Get(inst.Operands[1], locals));
+    {
+        // LLVM semantics: arithmetic/bitwise results wrap to the instruction's
+        // integer width (ClamAV's VM stores typed values, e.g. i32 add wraps).
+        var value = op(Get(inst.Operands[0], locals), Get(inst.Operands[1], locals));
+        return inst.Type is 8 or 16 or 32 or 64 ? Truncate(value, inst.Type) : value;
+    }
 
     private ulong Compare(ClamBcInstruction inst, Dictionary<int, ulong> locals, Func<ulong, ulong, bool> op)
         => op(Get(inst.Operands[0], locals), Get(inst.Operands[1], locals)) ? 1UL : 0UL;
