@@ -163,6 +163,10 @@ verdict_timeout=Hết thời gian
 verdict_error=Lỗi quét
 selected=KẾT QUẢ ĐÃ CHỌN
 select_entry=Chọn một bản ghi để xem chi tiết
+kind=Loại
+duration=Thời lượng
+detections=Phát hiện
+signature=Chữ ký
 
 [quarantine]
 size=KÍCH THƯỚC
@@ -218,6 +222,40 @@ processes=TIẾN TRÌNH ĐANG CHẠY
 startup=ỨNG DỤNG KHỞI ĐỘNG
 network=BỘ ĐIỀU HỢP MẠNG
 open_security=Mở Windows Security
+toolkit=BỘ CÔNG CỤ
+hash_title=Mã băm & Kiểm tra tổng
+hash_desc=Tính MD5, SHA-1 và SHA-256 cho tệp bất kỳ và sao chép để đối chiếu.
+hash_pick=Chọn tệp…
+hash_copy=Sao chép
+hash_copied=đã sao chép vào clipboard
+hash_failed=Không đọc được tệp: {0}
+eicar_title=Tệp thử nghiệm EICAR
+eicar_desc=Tạo tệp thử nghiệm antivirus chuẩn ngành (vô hại) trên Desktop để kiểm tra máy quét và bảo vệ thời gian thực có nhận diện được không.
+eicar_create=Tạo tệp thử nghiệm
+eicar_confirm_body=Một tệp EICAR vô hại sẽ được tạo trên Desktop. Các engine antivirus cố tình nhận diện nó — nó KHÔNG chứa mã độc thật. Bảo vệ thời gian thực sẽ cách ly trong tích tắc nếu đang bật, hoặc bạn quét từ trang Scan.
+eicar_created=Đã tạo {0}. Bảo vệ thời gian thực sẽ phát hiện ngay nếu đang bật.
+eicar_failed=Không tạo được tệp thử nghiệm: {0}
+cleanup_title=Dọn dẹp tệp tạm
+cleanup_desc=Tìm và xoá các tệp tạm đã cũ hơn 24 giờ trong thư mục TEMP của người dùng và Windows. Tệp đang khoá hoặc mới tạo luôn được bỏ qua.
+cleanup_scan=Quét rác
+cleanup_clean=Dọn ngay
+cleanup_found=Tìm thấy {0} trong {1} tệp (cũ hơn 24 giờ): {2} · TEMP người dùng, {3} · TEMP Windows.
+cleanup_confirm_title=Dọn tệp tạm
+cleanup_confirm_body={0} tệp tạm ({1}) cũ hơn 24 giờ sẽ bị xoá vĩnh viễn, không thể hoàn tác. Tiếp tục?
+cleanup_done=Đã giải phóng {0}. {1} tệp đang bị khoá/bảo vệ nên được bỏ qua.
+cleanup_nothing=Không có tệp tạm nào cũ hơn 24 giờ.
+cleanup_failed=Dọn dẹp thất bại: {0}
+tester_title=Kiểm tra chữ ký mẫu
+tester_desc=Dán chữ ký (NDB: name:target:offset:hex — hoặc .db: name=hex), chọn tệp mẫu rồi kiểm tra engine có khớp không.
+tester_placeholder=Ví dụ: EICAR-Test-File:0:0:584F21502...&#x0a;hoặc: eicar.sample=584F21502540415...
+tester_pick=Chọn tệp mẫu…
+tester_run=Kiểm tra
+tester_no_file=Chọn tệp mẫu trước.
+tester_no_signature=Dán chữ ký trước.
+tester_invalid=Chữ ký không hợp lệ: {0}
+tester_not_loaded=Chữ ký đã parse nhưng bị lọc bởi quy tắc engine — kiểm tra định dạng và functionality level.
+tester_match=KHỚP — {0}
+tester_no_match=Không khớp — tệp mẫu sạch với chữ ký này.
 
 [quarantine]
 threat_title=Phát hiện mối đe dọa
@@ -299,6 +337,7 @@ minutes={0} phút
 hours={0} giờ
 days={0} ngày
 off=Tắt
+on=Bật
 ready=Sẵn sàng
 not_ready=Chưa sẵn sàng
 logical=luồng logic

@@ -82,6 +82,262 @@
                 </Grid>
             </Border>
 
+            <!-- Toolkit -->
+            <TextBlock Text="{loc:Loc tools.toolkit}"
+                       Margin="1,16,0,0"
+                       Style="{DynamicResource Style.SectionLabel}" />
+
+            <!-- Tool: Checksum & Hash -->
+            <Border Margin="0,8,0,0"
+                    Style="{DynamicResource Style.Card}"
+                    Padding="12">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+
+                    <Border Width="38" Height="38" VerticalAlignment="Top"
+                            Background="{DynamicResource Brush.PrimarySoft}"
+                            CornerRadius="8">
+                        <Path Width="18" Height="18" HorizontalAlignment="Center" VerticalAlignment="Center"
+                              Stroke="{DynamicResource Brush.Primary}" StrokeThickness="1.5"
+                              Data="{DynamicResource Icon.Hash}" Stretch="Uniform" />
+                    </Border>
+
+                    <StackPanel Grid.Column="1" Margin="12,0,0,0">
+                        <TextBlock Text="{loc:Loc tools.hash_title}"
+                                   Style="{DynamicResource Style.CardTitle}" />
+                        <TextBlock Text="{loc:Loc tools.hash_desc}"
+                                   Margin="0,3,0,9"
+                                   Style="{DynamicResource Style.MutedText}"
+                                   TextWrapping="Wrap" />
+                        <Button Click="PickHashFile_Click"
+                                Style="{DynamicResource Style.ButtonSecondary}"
+                                Height="32" Padding="14,6"
+                                HorizontalAlignment="Left">
+                            <StackPanel Orientation="Horizontal">
+                                <Path Width="14" Height="14" Stroke="{DynamicResource Brush.TextSecondary}" StrokeThickness="1.4" Data="{DynamicResource Icon.File}" Stretch="Uniform" />
+                                <TextBlock Text="{loc:Loc tools.hash_pick}" Margin="7,0,0,0" />
+                            </StackPanel>
+                        </Button>
+
+                        <TextBlock x:Name="HashFileNameText"
+                                   Margin="0,9,0,0"
+                                   Style="{DynamicResource Style.MutedText}"
+                                   TextTrimming="CharacterEllipsis"
+                                   Visibility="Collapsed" />
+
+                        <Grid x:Name="HashResultsGrid" Margin="0,8,0,0" Visibility="Collapsed">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="52" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+
+                            <TextBlock Text="MD5" Style="{DynamicResource Style.MutedText}" />
+                            <TextBlock x:Name="HashMd5Text" Grid.Column="1" Margin="0,0,8,0"
+                                       FontFamily="Consolas" FontSize="10.5"
+                                       Foreground="{DynamicResource Brush.TextSecondary}"
+                                       TextTrimming="CharacterEllipsis" />
+                            <Button Grid.Column="2" Tag="MD5" Click="CopyHash_Click"
+                                    Style="{DynamicResource Style.ButtonGhost}"
+                                    Height="24" Padding="9,2" FontSize="11"
+                                    Content="{loc:Loc tools.hash_copy}" />
+
+                            <TextBlock Grid.Row="1" Text="SHA-1" Style="{DynamicResource Style.MutedText}" />
+                            <TextBlock x:Name="HashSha1Text" Grid.Row="1" Grid.Column="1" Margin="0,0,8,0"
+                                       FontFamily="Consolas" FontSize="10.5"
+                                       Foreground="{DynamicResource Brush.TextSecondary}"
+                                       TextTrimming="CharacterEllipsis" />
+                            <Button Grid.Row="1" Grid.Column="2" Tag="SHA1" Click="CopyHash_Click"
+                                    Style="{DynamicResource Style.ButtonGhost}"
+                                    Height="24" Padding="9,2" FontSize="11"
+                                    Content="{loc:Loc tools.hash_copy}" />
+
+                            <TextBlock Grid.Row="2" Text="SHA-256" Style="{DynamicResource Style.MutedText}" />
+                            <TextBlock x:Name="HashSha256Text" Grid.Row="2" Grid.Column="1" Margin="0,0,8,0"
+                                       FontFamily="Consolas" FontSize="10.5"
+                                       Foreground="{DynamicResource Brush.TextSecondary}"
+                                       TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" />
+                            <Button Grid.Row="2" Grid.Column="2" Tag="SHA256" Click="CopyHash_Click"
+                                    Style="{DynamicResource Style.ButtonGhost}"
+                                    Height="24" Padding="9,2" FontSize="11"
+                                    Content="{loc:Loc tools.hash_copy}" />
+                        </Grid>
+
+                        <TextBlock x:Name="HashStatusText"
+                                   Margin="0,6,0,0"
+                                   Style="{DynamicResource Style.MutedText}"
+                                   Visibility="Collapsed" />
+                    </StackPanel>
+                </Grid>
+            </Border>
+
+            <!-- Tool: EICAR test file -->
+            <Border Margin="0,10,0,0"
+                    Style="{DynamicResource Style.Card}"
+                    Padding="12">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+
+                    <Border Width="38" Height="38" VerticalAlignment="Top"
+                            Background="{DynamicResource Brush.WarningSoft}"
+                            CornerRadius="8">
+                        <Path Width="18" Height="18" HorizontalAlignment="Center" VerticalAlignment="Center"
+                              Stroke="{DynamicResource Brush.Warning}" StrokeThickness="1.5"
+                              Data="{DynamicResource Icon.Shield}" Stretch="Uniform" />
+                    </Border>
+
+                    <StackPanel Grid.Column="1" Margin="12,0,0,0">
+                        <TextBlock Text="{loc:Loc tools.eicar_title}"
+                                   Style="{DynamicResource Style.CardTitle}" />
+                        <TextBlock Text="{loc:Loc tools.eicar_desc}"
+                                   Margin="0,3,0,9"
+                                   Style="{DynamicResource Style.MutedText}"
+                                   TextWrapping="Wrap" />
+                        <Button Click="CreateEicar_Click"
+                                Style="{DynamicResource Style.ButtonSecondary}"
+                                Height="32" Padding="14,6"
+                                HorizontalAlignment="Left">
+                            <StackPanel Orientation="Horizontal">
+                                <Path Width="14" Height="14" Stroke="{DynamicResource Brush.TextSecondary}" StrokeThickness="1.4" Data="{DynamicResource Icon.Shield}" Stretch="Uniform" />
+                                <TextBlock Text="{loc:Loc tools.eicar_create}" Margin="7,0,0,0" />
+                            </StackPanel>
+                        </Button>
+                        <TextBlock x:Name="EicarStatusText"
+                                   Margin="0,8,0,0"
+                                   Style="{DynamicResource Style.MutedText}"
+                                   TextWrapping="Wrap"
+                                   Visibility="Collapsed" />
+                    </StackPanel>
+                </Grid>
+            </Border>
+
+            <!-- Tool: cleanup temp files -->
+            <Border Margin="0,10,0,0"
+                    Style="{DynamicResource Style.Card}"
+                    Padding="12">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+
+                    <Border Width="38" Height="38" VerticalAlignment="Top"
+                            Background="{DynamicResource Brush.PrimarySoft}"
+                            CornerRadius="8">
+                        <Path Width="18" Height="18" HorizontalAlignment="Center" VerticalAlignment="Center"
+                              Stroke="{DynamicResource Brush.Primary}" StrokeThickness="1.5"
+                              Data="{DynamicResource Icon.Trash}" Stretch="Uniform" />
+                    </Border>
+
+                    <StackPanel Grid.Column="1" Margin="12,0,0,0">
+                        <TextBlock Text="{loc:Loc tools.cleanup_title}"
+                                   Style="{DynamicResource Style.CardTitle}" />
+                        <TextBlock Text="{loc:Loc tools.cleanup_desc}"
+                                   Margin="0,3,0,9"
+                                   Style="{DynamicResource Style.MutedText}"
+                                   TextWrapping="Wrap" />
+                        <StackPanel Orientation="Horizontal">
+                            <Button Click="ScanJunk_Click"
+                                    Style="{DynamicResource Style.ButtonSecondary}"
+                                    Height="32" Padding="14,6">
+                                <StackPanel Orientation="Horizontal">
+                                    <Path Width="14" Height="14" Stroke="{DynamicResource Brush.TextSecondary}" StrokeThickness="1.4" Data="{DynamicResource Icon.Scan}" Stretch="Uniform" />
+                                    <TextBlock Text="{loc:Loc tools.cleanup_scan}" Margin="7,0,0,0" />
+                                </StackPanel>
+                            </Button>
+                            <Button x:Name="CleanNowButton"
+                                    Margin="8,0,0,0"
+                                    Click="CleanJunk_Click"
+                                    IsEnabled="False"
+                                    Style="{DynamicResource Style.ButtonPrimary}"
+                                    Height="32" Padding="14,6">
+                                <TextBlock Text="{loc:Loc tools.cleanup_clean}" />
+                            </Button>
+                        </StackPanel>
+                        <TextBlock x:Name="CleanupStatusText"
+                                   Margin="0,8,0,0"
+                                   Style="{DynamicResource Style.MutedText}"
+                                   TextWrapping="Wrap"
+                                   Visibility="Collapsed" />
+                    </StackPanel>
+                </Grid>
+            </Border>
+
+            <!-- Tool: signature tester -->
+            <Border Margin="0,10,0,0"
+                    Style="{DynamicResource Style.Card}"
+                    Padding="12">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+
+                    <Border Width="38" Height="38" VerticalAlignment="Top"
+                            Background="{DynamicResource Brush.PrimarySoft}"
+                            CornerRadius="8">
+                        <Path Width="18" Height="18" HorizontalAlignment="Center" VerticalAlignment="Center"
+                              Stroke="{DynamicResource Brush.Primary}" StrokeThickness="1.5"
+                              Data="{DynamicResource Icon.Flask}" Stretch="Uniform" />
+                    </Border>
+
+                    <StackPanel Grid.Column="1" Margin="12,0,0,0">
+                        <TextBlock Text="{loc:Loc tools.tester_title}"
+                                   Style="{DynamicResource Style.CardTitle}" />
+                        <TextBlock Text="{loc:Loc tools.tester_desc}"
+                                   Margin="0,3,0,9"
+                                   Style="{DynamicResource Style.MutedText}"
+                                   TextWrapping="Wrap" />
+                        <TextBox x:Name="SignatureInput"
+                                 FontFamily="Consolas"
+                                 FontSize="10.5"
+                                 AcceptsReturn="True"
+                                 TextWrapping="NoWrap"
+                                 Height="52"
+                                 VerticalScrollBarVisibility="Auto"
+                                 Background="{DynamicResource Brush.InputDisabled}"
+                                 Foreground="{DynamicResource Brush.TextPrimary}"
+                                 BorderBrush="{DynamicResource Brush.Border}"
+                                 BorderThickness="1"
+                                 Padding="7,5"
+                                 ToolTip="{loc:Loc tools.tester_placeholder}" />
+                        <StackPanel Orientation="Horizontal" Margin="0,9,0,0">
+                            <Button Click="PickSampleFile_Click"
+                                    Style="{DynamicResource Style.ButtonSecondary}"
+                                    Height="32" Padding="14,6">
+                                <StackPanel Orientation="Horizontal">
+                                    <Path Width="14" Height="14" Stroke="{DynamicResource Brush.TextSecondary}" StrokeThickness="1.4" Data="{DynamicResource Icon.File}" Stretch="Uniform" />
+                                    <TextBlock x:Name="SampleFileText" Text="{loc:Loc tools.tester_pick}" Margin="7,0,0,0" />
+                                </StackPanel>
+                            </Button>
+                            <Button x:Name="TestSignatureButton"
+                                    Margin="8,0,0,0"
+                                    Click="TestSignature_Click"
+                                    Style="{DynamicResource Style.ButtonPrimary}"
+                                    Height="32" Padding="14,6">
+                                <TextBlock Text="{loc:Loc tools.tester_run}" />
+                            </Button>
+                        </StackPanel>
+                        <TextBlock x:Name="TesterStatusText"
+                                   Margin="0,8,0,0"
+                                   Style="{DynamicResource Style.MutedText}"
+                                   TextWrapping="Wrap"
+                                   Visibility="Collapsed" />
+                    </StackPanel>
+                </Grid>
+            </Border>
+
             <!-- Tool actions -->
             <Grid Margin="0,10,0,0">
                 <Grid.ColumnDefinitions>
@@ -184,7 +440,7 @@
                         <TextBlock Text="{loc:Loc tools.path}"
                                    Style="{DynamicResource Style.MutedText}" />
                         <TextBlock Grid.Column="1"
-                                   Text="{Binding InspectedFile.Path, TargetNullValue=â€”}"
+                                   Text="{Binding InspectedFile.Path, TargetNullValue=—}"
                                    Style="{DynamicResource Style.GridColumnText}"
                                    TextTrimming="CharacterEllipsis"
                                    ToolTip="{Binding InspectedFile.Path}" />
@@ -194,7 +450,7 @@
                                    Style="{DynamicResource Style.MutedText}" />
                         <TextBlock Grid.Row="1"
                                    Grid.Column="1"
-                                   Text="{Binding InspectedFile.Sha256, TargetNullValue=â€”}"
+                                   Text="{Binding InspectedFile.Sha256, TargetNullValue=—}"
                                    FontFamily="Consolas"
                                    FontSize="10"
                                    Foreground="{DynamicResource Brush.TextSecondary}"
@@ -205,7 +461,7 @@
                                    Style="{DynamicResource Style.MutedText}" />
                         <TextBlock Grid.Row="2"
                                    Grid.Column="1"
-                                   Text="{Binding InspectedFile.Version, TargetNullValue=â€”}"
+                                   Text="{Binding InspectedFile.Version, TargetNullValue=—}"
                                    Style="{DynamicResource Style.GridColumnText}" />
 
                         <TextBlock Grid.Row="3"
@@ -213,7 +469,7 @@
                                    Style="{DynamicResource Style.MutedText}" />
                         <TextBlock Grid.Row="3"
                                    Grid.Column="1"
-                                   Text="{Binding InspectedFile.SignatureStatus, TargetNullValue=â€”}"
+                                   Text="{Binding InspectedFile.SignatureStatus, TargetNullValue=—}"
                                    Style="{DynamicResource Style.GridColumnText}"
                                    TextWrapping="Wrap" />
                     </Grid>

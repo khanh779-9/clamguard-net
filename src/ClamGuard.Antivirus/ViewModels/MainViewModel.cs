@@ -175,7 +175,13 @@ public sealed partial class MainViewModel : INotifyPropertyChanged
         private set { if (SetField(ref _databaseReady, value)) { OnPropertyChanged(nameof(DatabaseStatusText)); } }
     }
     public uint? DatabaseVersion { get => _databaseVersion; private set => SetField(ref _databaseVersion, value); }
-    public int SignatureCount { get => _signatureCount; private set => SetField(ref _signatureCount, value); }
+    public int SignatureCount
+    {
+        get => _signatureCount;
+        private set { if (SetField(ref _signatureCount, value)) OnPropertyChanged(nameof(SignaturesStatusText)); }
+    }
+
+    public string SignaturesStatusText => LocalizationService.Instance.Format("tools.database_signatures", SignatureCount);
     public string DatabaseSummary { get => _databaseSummary; private set => SetField(ref _databaseSummary, value); }
     public string DatabasePath { get => _databasePath; private set => SetField(ref _databasePath, value); }
     public bool RealtimeEnabled {
@@ -503,6 +509,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(DatabaseStatusText));
         OnPropertyChanged(nameof(RealtimeStatusText));
         OnPropertyChanged(nameof(BusyStatusText));
+        OnPropertyChanged(nameof(SignaturesStatusText));
     }
 
     private void SetProtectionStatus(string? message = null)

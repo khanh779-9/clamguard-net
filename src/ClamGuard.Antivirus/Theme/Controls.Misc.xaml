@@ -10,7 +10,7 @@
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="ProgressBar">
-                    <Grid>
+                    <Grid ClipToBounds="True">
                         <Border Background="{TemplateBinding Background}" CornerRadius="3" />
                         <Border x:Name="Indicator" Background="{TemplateBinding Foreground}" CornerRadius="3"
                                 HorizontalAlignment="Left" Width="0" />
@@ -18,6 +18,24 @@
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsIndeterminate" Value="True">
                             <Setter TargetName="Indicator" Property="Width" Value="75" />
+                            <Trigger.EnterActions>
+                                <!-- The custom template replaced the default WPF
+                                     animation; without this the indeterminate
+                                     bar is a static strip that looks frozen.
+                                     A width-relative sweep is not expressible in
+                                     a XAML storyboard, so pulse instead. -->
+                                <BeginStoryboard x:Name="IndeterminateStoryboard">
+                                    <Storyboard RepeatBehavior="Forever" AutoReverse="True">
+                                        <DoubleAnimation
+                                            Storyboard.TargetName="Indicator"
+                                            Storyboard.TargetProperty="Opacity"
+                                            From="1" To="0.3" Duration="0:0:0.9" />
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </Trigger.EnterActions>
+                            <Trigger.ExitActions>
+                                <StopStoryboard BeginStoryboardName="IndeterminateStoryboard" />
+                            </Trigger.ExitActions>
                         </Trigger>
                     </ControlTemplate.Triggers>
                 </ControlTemplate>

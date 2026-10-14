@@ -161,6 +161,10 @@ verdict_timeout=Timeout
 verdict_error=Scan error
 selected=SELECTED RESULT
 select_entry=Select an entry to see details
+kind=Kind
+duration=Duration
+detections=Detections
+signature=Signature
 
 [quarantine]
 size=SIZE
@@ -216,6 +220,40 @@ processes=RUNNING PROCESSES
 startup=STARTUP ENTRIES
 network=NETWORK ADAPTERS
 open_security=Open Windows Security
+toolkit=TOOLKIT
+hash_title=Checksum & Hash
+hash_desc=Compute MD5, SHA-1 and SHA-256 digests for any file and copy them for verification.
+hash_pick=Choose file…
+hash_copy=Copy
+hash_copied=copied to clipboard
+hash_failed=Could not read the file: {0}
+eicar_title=EICAR Test File
+eicar_desc=Create the harmless, industry-standard antivirus test file on the Desktop to verify that scanning and real-time protection detect it.
+eicar_create=Create test file
+eicar_confirm_body=A harmless EICAR test file will be created on the Desktop. Antivirus engines flag it on purpose — it contains no real malware. Real-time protection will quarantine it within a second if enabled, or you can scan it from the Scan page.
+eicar_created=Created {0}. Real-time protection should flag it shortly if enabled.
+eicar_failed=Could not create the test file: {0}
+cleanup_title=Temp File Cleanup
+cleanup_desc=Find and remove temporary files older than 24 hours from the user and Windows TEMP folders. Locked or recent files are always skipped.
+cleanup_scan=Scan for junk
+cleanup_clean=Clean now
+cleanup_found=Found {0} across {1} files (older than 24 h): {2} · user temp, {3} · Windows temp.
+cleanup_confirm_title=Clean temp files
+cleanup_confirm_body={0} temporary files ({1}) older than 24 hours will be permanently deleted. This cannot be undone. Continue?
+cleanup_done=Freed {0}. {1} file(s) were locked or protected and skipped.
+cleanup_nothing=No temporary files older than 24 hours were found.
+cleanup_failed=Cleanup failed: {0}
+tester_title=Signature Tester
+tester_desc=Paste a signature (NDB: name:target:offset:hex — or .db: name=hex), pick a sample file and check whether the engine matches it.
+tester_placeholder=Example: EICAR-Test-File:0:0:584F21502...&#x0a;or: eicar.sample=584F21502540415...
+tester_pick=Pick sample file…
+tester_run=Test
+tester_no_file=Choose a sample file first.
+tester_no_signature=Paste a signature first.
+tester_invalid=Signature could not be parsed: {0}
+tester_not_loaded=Signature was parsed but filtered by engine rules — check the format and functionality level.
+tester_match=MATCH — {0}
+tester_no_match=No match — the sample file is clean for this signature.
 
 [quarantine]
 threat_title=Threat detected
@@ -297,6 +335,7 @@ minutes={0}m
 hours={0}h
 days={0}d
 off=Off
+on=On
 ready=Ready
 not_ready=Not ready
 logical=logical

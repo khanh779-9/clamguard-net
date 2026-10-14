@@ -33,12 +33,12 @@ public sealed record ScanHistoryItem(
 
     public string VerdictText => Verdict switch
     {
-        ScanVerdict.Clean => "Clean",
-        ScanVerdict.Malicious => "Threat detected",
-        ScanVerdict.Trusted => "Trusted",
-        ScanVerdict.PotentiallyUnwanted => "Potentially unwanted",
-        ScanVerdict.StrongIndicator => "Strong indicator",
-        ScanVerdict.Timeout => "Timeout",
-        _ => "Scan error"
+        ScanVerdict.Clean => App.Localization.Get("history.verdict_clean"),
+        ScanVerdict.Malicious => App.Localization.Get("history.verdict_threat"),
+        ScanVerdict.Trusted => App.Localization.Get("history.verdict_trusted"),
+        ScanVerdict.PotentiallyUnwanted => App.Localization.Get("history.verdict_pua"),
+        ScanVerdict.StrongIndicator => App.Localization.Get("history.verdict_indicator"),
+        ScanVerdict.Timeout => App.Localization.Get("history.verdict_timeout"),
+        _ => App.Localization.Get("history.verdict_error")
     };
 }
