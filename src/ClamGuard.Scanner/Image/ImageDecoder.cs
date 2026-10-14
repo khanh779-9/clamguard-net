@@ -4,6 +4,19 @@ namespace ClamGuard.Scanner;
 
 internal static class ImageDecoder
 {
+    /// <summary>Hard cap on any declared image width or height accepted from untrusted data.</summary>
+    internal const int MaxImageDimension = 4096;
+
+    /// <summary>Hard cap on total decoded pixel bytes (e.g. width * height * 3 for RGB output).</summary>
+    internal const long MaxImagePixelBytes = 64L * 1024 * 1024;
+
+    /// <summary>
+    /// Decodes image data from an untrusted source into BGR bytes for fuzzy hashing.
+    /// Decoded dimensions are capped at MaxImageDimension (4096) per axis and total decoded
+    /// pixel bytes at MaxImagePixelBytes (64 MiB); PNG IDAT decompression is bounded and aborted
+    /// as soon as output exceeds its cap. Malformed or over-cap input returns false instead of
+    /// throwing, so callers only need the boolean result.
+    /// </summary>
     public static bool TryDecode(ReadOnlySpan<byte> data, out RgbImage image)
     {
         image = null!;
@@ -42,6 +55,10 @@ internal static class ImageDecoder
             var sourceType = Type.GetType("System.Windows.Media.Imaging.BitmapSource, PresentationCore", false)!;
             var w = (int)sourceType.GetProperty("PixelWidth")!.GetValue(converted)!;
             var h = (int)sourceType.GetProperty("PixelHeight")!.GetValue(converted)!;
+            if (w < 1 || h < 1 ||
+                w > MaxImageDimension || h > MaxImageDimension ||
+                (long)w * h * 4 > MaxImagePixelBytes)
+                return false;
             var raw = new byte[w * h * 4];
             var copy = sourceType.GetMethod("CopyPixels", new[] { rectType, typeof(Array), typeof(int), typeof(int) });
             if (copy is null) return false;

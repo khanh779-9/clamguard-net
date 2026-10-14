@@ -9,6 +9,10 @@ namespace ClamGuard.Scanner;
 /// </summary>
 internal static class RegexContentMatcher
 {
+    // Compiling the same (pattern, flags) pair once per process avoids a
+    // RegexOptions.Compiled cost (ms + IL) on every file × every PCRE subsig.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<(string Pattern, RegexOptions Options), Regex> RegexCache = new();
+
     internal static List<int> FindRegexMatches(LdbRegexSubSignature signature, ReadOnlySpan<byte> data, LdbScanContext context, int maxMatches)
     {
         if (maxMatches <= 0 || data.IsEmpty)
@@ -20,13 +24,13 @@ internal static class RegexContentMatcher
         if (signature.Flags.Contains('m')) options |= RegexOptions.Multiline;
         if (signature.Flags.Contains('x')) options |= RegexOptions.IgnorePatternWhitespace;
 
-        Regex regex;
+        Regex? regex;
         try
         {
             var regexPattern = signature.Flags.Contains('U') ? MakeUngreedyRegex(signature.Pattern) : signature.Pattern;
             if (signature.Flags.Contains('E'))
                 regexPattern = MakeDollarEndOnlyRegex(regexPattern);
-            regex = new Regex(regexPattern, options, TimeSpan.FromMilliseconds(250));
+            regex = RegexCache.GetOrAdd((regexPattern, options), static key => new Regex(key.Pattern, key.Options, TimeSpan.FromMilliseconds(250)));
         }
         catch (ArgumentException)
         {

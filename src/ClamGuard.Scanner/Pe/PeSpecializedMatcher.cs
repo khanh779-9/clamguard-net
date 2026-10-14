@@ -119,15 +119,13 @@ internal static partial class PeSpecializedMatcher
         // PE_CONF_MD5SECT / PE_CONF_IMPTBL dconf flags.
         var peFlags = state.Database.DynamicConfiguration.Pe;
         var results = new List<Detection>();
-        var sectionRules = state.Database.Signatures
-            .OfType<HashSignature>()
+        var sectionRules = state.Database.HashSignatures
             .Where(static s => IsSectionHash(s.SourceFile))
             .ToArray();
         if (sectionRules.Length != 0 && (peFlags & DynamicConfigFlags.PeMd5Sect) != 0)
             MatchSections(data, pe, sectionRules, limits.MaxPatternMatchesPerSignature, results, cancellationToken);
 
-        var importRules = state.Database.Signatures
-            .OfType<HashSignature>()
+        var importRules = state.Database.HashSignatures
             .Where(static s => IsImportHash(s.SourceFile))
             .ToArray();
         if (importRules.Length != 0 && (peFlags & DynamicConfigFlags.PeImpTbl) != 0)
@@ -150,16 +148,22 @@ internal static partial class PeSpecializedMatcher
             cancellationToken.ThrowIfCancellationRequested();
             if (section.RawSize <= 0 || section.RawSize > data.Length || section.RawOffset < 0 || section.RawOffset > data.Length - section.RawSize)
                 continue;
-            if (section.RawSize > int.MaxValue)
-                continue;
 
             var span = data.Slice((int)section.RawOffset, (int)section.RawSize);
+            // Hash each section once per required algorithm instead of once per
+            // rule; a real .mdb set holds thousands of rules over the same span.
+            var digests = new Dictionary<HashAlgorithmKind, byte[]>(3);
             foreach (var rule in rules)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 if (rule.FileSize is not null && rule.FileSize.Value != section.RawSize)
                     continue;
-                if (!HashMatches(span, rule))
+                if (!digests.TryGetValue(rule.Algorithm, out var digest))
+                {
+                    digest = HashAlgorithm(rule.Algorithm, span);
+                    digests[rule.Algorithm] = digest;
+                }
+                if (!digest.AsSpan().SequenceEqual(rule.Hash))
                     continue;
 
                 results.Add(new Detection(
@@ -222,17 +226,13 @@ internal static partial class PeSpecializedMatcher
         return builder.ToString();
     }
 
-    private static bool HashMatches(ReadOnlySpan<byte> data, HashSignature signature)
+    private static byte[] HashAlgorithm(HashAlgorithmKind algorithm, ReadOnlySpan<byte> data) => algorithm switch
     {
-        byte[] digest = signature.Algorithm switch
-        {
-            HashAlgorithmKind.Md5 => MD5.HashData(data),
-            HashAlgorithmKind.Sha1 => SHA1.HashData(data),
-            HashAlgorithmKind.Sha256 => SHA256.HashData(data),
-            _ => []
-        };
-        return digest.AsSpan().SequenceEqual(signature.Hash);
-    }
+        HashAlgorithmKind.Md5 => System.Security.Cryptography.MD5.HashData(data),
+        HashAlgorithmKind.Sha1 => System.Security.Cryptography.SHA1.HashData(data),
+        HashAlgorithmKind.Sha256 => System.Security.Cryptography.SHA256.HashData(data),
+        _ => []
+    };
 
     internal static bool IsSectionHash(string path)
     {

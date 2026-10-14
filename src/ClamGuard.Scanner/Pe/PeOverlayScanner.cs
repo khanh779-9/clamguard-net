@@ -73,11 +73,11 @@ internal static class PeOverlayScanner
         foreach (var hit in state.Compiled.Match(overlay, path, includeNdb: false, collectAllMatches: (options.CollectAllMatches || !options.DetectPUA)))
             results.Add(hit.Offset is null ? hit : hit with { Offset = hit.Offset.Value + overlayOffset });
 
-        var ndb = state.Database.Signatures.OfType<NdbSignature>().ToArray();
+        var ndb = state.Database.NdbSignatures;
         foreach (var hit in ScannerEngine.EvaluateNdb(ndb, overlay, options.Limits, fileType, cancellationToken, options))
             results.Add(hit.Offset is null ? hit : hit with { Offset = hit.Offset.Value + overlayOffset });
 
-        foreach (var hit in ScannerEngine.EvaluateLogical(state.Database.Signatures.OfType<LogicalSignature>(), ndb, overlay, options.Limits, fileType, state.Database.IconDatabase, parentTypes, cancellationToken, scanState: state, scanOptions: options))
+        foreach (var hit in ScannerEngine.EvaluateLogical(state.Database.LogicalSignatures, ndb, overlay, options.Limits, fileType, state.Database.IconDatabase, parentTypes, cancellationToken, scanState: state, scanOptions: options))
             results.Add(hit.Offset is null ? hit : hit with { Offset = hit.Offset.Value + overlayOffset });
 
         if (ScanTypePolicy.IsPe(fileType))

@@ -24,7 +24,8 @@ internal static partial class SpecializedFileHandlers
         CompiledState state,
         ScanOptions options,
         string path,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        ScanContext? context = null)
     {
         // ClamAV 1.5.4 delegates OneNote extraction to its onenote.rs component.
         // Keep the managed implementation aligned with the documented fallback
@@ -59,7 +60,7 @@ internal static partial class SpecializedFileHandlers
             if (payload.Length != 0)
             {
                 results.AddRange(ScanNestedBytes(payload, state, options,
-                    $"{path}#onenote-attachment-{attachmentIndex++}", cancellationToken));
+                    $"{path}#onenote-attachment-{attachmentIndex++}", cancellationToken, context));
                 if (!options.CollectAllMatches && options.HasBlockingDetections(results))
                     return options.FilterDetections(results).Take(1).ToArray();
             }
@@ -75,7 +76,8 @@ internal static partial class SpecializedFileHandlers
         CompiledState state,
         ScanOptions options,
         string path,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        ScanContext? context = null)
     {
         if (data.Length > options.Limits.MaxEmbeddedStreamSize || data.Length == 0)
             return [];
@@ -121,7 +123,7 @@ internal static partial class SpecializedFileHandlers
                 if (pdfAt < 0) break;
 
                 results.AddRange(ScanNestedBytes(decoded, state, options,
-                    $"{path}#xdp-pdf-{pdfAt}", cancellationToken));
+                    $"{path}#xdp-pdf-{pdfAt}", cancellationToken, context));
                 if (!options.CollectAllMatches && options.HasBlockingDetections(results))
                     return options.FilterDetections(results).Take(1).ToArray();
             }

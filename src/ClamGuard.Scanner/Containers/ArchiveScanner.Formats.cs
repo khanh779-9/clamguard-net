@@ -46,7 +46,7 @@ internal static partial class ArchiveScanner
                     results.Add(new Detection("Heuristics.Encrypted.Zip", SignatureType.Metadata, null, "heuristics", $"Encrypted ZIP member: {entry.FullName}"));
                 }
                 var metadataHits = MatchMetadataSignatures(
-                    state.Database.Signatures.OfType<MetadataSignature>(),
+                    state.Database.MetadataSignatures,
                     "ZIP",
                     entry.FullName,
                     metadataCompressedSize,
@@ -55,7 +55,7 @@ internal static partial class ArchiveScanner
                     filePosition,
                     metadataCrc);
                 metadataHits.AddRange(MatchCdbSignatures(
-                    state.Database.Signatures.OfType<CdbSignature>(),
+                    state.Database.CdbSignatures,
                     "ZIP",
                     data.Length,
                     entry.FullName,
@@ -265,7 +265,7 @@ internal static partial class ArchiveScanner
                 if (budget.Entries++ >= options.Limits.MaxArchiveEntries) { budget.LimitExceeded = true; break; }
 
                 var metadataHits = MatchMetadataSignatures(
-                    state.Database.Signatures.OfType<MetadataSignature>(),
+                    state.Database.MetadataSignatures,
                     format,
                     item.Name,
                     item.CompressedSize,
@@ -276,7 +276,7 @@ internal static partial class ArchiveScanner
                 if (SupportsClamAvCdbMetadata(format))
                 {
                     metadataHits.AddRange(MatchCdbSignatures(
-                        state.Database.Signatures.OfType<CdbSignature>(),
+                        state.Database.CdbSignatures,
                         format,
                         data.Length,
                         item.Name,
@@ -373,7 +373,7 @@ internal static partial class ArchiveScanner
                     // ClamAV's untar.c calls cli_matchmeta() for every regular file,
                     // using the archive layer type/size plus the entry metadata.
                     var cdbHits = MatchCdbSignatures(
-                        state.Database.Signatures.OfType<CdbSignature>(),
+                        state.Database.CdbSignatures,
                         format,
                         data.Length,
                         name,
@@ -439,7 +439,7 @@ internal static partial class ArchiveScanner
                 if (name.Length == 0) continue;
                 if (budget.Entries++ >= options.Limits.MaxArchiveEntries) { budget.LimitExceeded = true; break; }
                 var cdbHits = MatchCdbSignatures(
-                    state.Database.Signatures.OfType<CdbSignature>(),
+                    state.Database.CdbSignatures,
                     format,
                     data.Length,
                     name,
@@ -483,7 +483,7 @@ internal static partial class ArchiveScanner
                 if (name.Length == 0) continue;
                 if (budget.Entries++ >= options.Limits.MaxArchiveEntries) { budget.LimitExceeded = true; break; }
                 var cdbHits = MatchCdbSignatures(
-                    state.Database.Signatures.OfType<CdbSignature>(),
+                    state.Database.CdbSignatures,
                     format,
                     data.Length,
                     name,
@@ -532,7 +532,7 @@ internal static partial class ArchiveScanner
                 if (name.Length == 0) continue;
                 if (budget.Entries++ >= options.Limits.MaxArchiveEntries) { budget.LimitExceeded = true; break; }
                 var cdbHits = MatchCdbSignatures(
-                    state.Database.Signatures.OfType<CdbSignature>(),
+                    state.Database.CdbSignatures,
                     format,
                     data.Length,
                     name,

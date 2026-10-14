@@ -43,12 +43,14 @@ internal static partial class ArchiveScanner
 
         var type = ScannerEngine.DetectType(child, childPath, state.Database.SpecialDatabases.FileTypes);
         var results = new List<Detection>();
-        var ndb = state.Database.Signatures.OfType<NdbSignature>().ToArray();
+        var ndb = state.Database.NdbSignatures;
         var childParents = parents.Concat([parentType]).ToArray();
 
         if (ScanTypePolicy.ShouldRunSpecializedPreRaw(type, options))
         {
-            results.AddRange(SpecializedFileHandlers.ScanPreRaw(child, type, state, options, childPath, cancellationToken));
+            // The child layer is one recursion level below the current container
+            // layer; sharing the budget keeps expanded-size limits cumulative.
+            results.AddRange(SpecializedFileHandlers.ScanPreRaw(child, type, state, options, childPath, cancellationToken, new ScanContext(depth + 1, budget)));
             if (!options.CollectAllMatches && options.HasBlockingDetections(results))
                 return options.FilterDetections(results).Take(1).ToList();
         }
@@ -79,7 +81,7 @@ internal static partial class ArchiveScanner
             return options.FilterDetections(results).Take(1).ToList();
 
         results.AddRange(ScannerEngine.EvaluateLogical(
-            state.Database.Signatures.OfType<LogicalSignature>(),
+            state.Database.LogicalSignatures,
             ndb,
             child,
             options.Limits,

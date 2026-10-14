@@ -20,17 +20,25 @@ internal static class PngFallback
 
         while (pos + 12 <= d.Length)
         {
-            var len = (int)BinaryPrimitives.ReadUInt32BigEndian(d.Slice(pos, 4));
+            var len = (long)BinaryPrimitives.ReadUInt32BigEndian(d.Slice(pos, 4));
             var type = Encoding.ASCII.GetString(d.Slice(pos + 4, 4));
             if (pos + 12 + len > d.Length) return false;
-            var body = d.Slice(pos + 8, len);
+            var body = d.Slice(pos + 8, (int)len);
             if (type == "IHDR")
             {
-                w = (int)BinaryPrimitives.ReadUInt32BigEndian(body[..4]);
-                h = (int)BinaryPrimitives.ReadUInt32BigEndian(body.Slice(4, 4));
+                if (body.Length != 13) return false;
+                var uw = BinaryPrimitives.ReadUInt32BigEndian(body);
+                var uh = BinaryPrimitives.ReadUInt32BigEndian(body.Slice(4, 4));
+                if (uw < 1 || uh < 1 ||
+                    uw > ImageDecoder.MaxImageDimension || uh > ImageDecoder.MaxImageDimension)
+                    return false;
+                w = (int)uw;
+                h = (int)uh;
                 bit = body[8];
                 ct = body[9];
                 if (bit != 8 || body[12] != 0) return false;
+                if (ct is not (2 or 3 or 6)) return false;
+                if ((long)w * h * 3 > ImageDecoder.MaxImagePixelBytes) return false;
             }
             else if (type == "IDAT")
             {
@@ -48,27 +56,27 @@ internal static class PngFallback
             {
                 break;
             }
-            pos += 12 + len;
+            pos += 12 + (int)len;
         }
 
         if (w < 1 || h < 1 || all.Length == 0) return false;
 
-        using var z = new MemoryStream(all.ToArray());
-        using var def = new ZLibStream(z, CompressionMode.Decompress);
-        using var rawMs = new MemoryStream();
-        def.CopyTo(rawMs);
-        var raw = rawMs.ToArray();
-
         var bpp = ct switch
         {
-            0 => 1,
             2 => 3,
             3 => 1,
-            4 => 2,
             6 => 4,
             _ => 0
         };
-        if (bpp == 0 || raw.Length < (w * bpp + 1) * h) return false;
+        if (bpp == 0) return false;
+
+        // Raw inflated size is exactly (w*bpp + 1) * h (filter byte per scanline). Allow one extra
+        // scanline of slack for malformed-but-decodable streams, hard-capped, and abort inflate
+        // the moment output exceeds it so a decompression bomb never materializes.
+        var expectedRaw = ((long)w * bpp + 1) * h;
+        var maxRaw = Math.Min(expectedRaw + w * bpp + 1L, ImageDecoder.MaxImagePixelBytes * 4L);
+        if (!TryInflateBounded(all.ToArray(), maxRaw, out var raw)) return false;
+        if (raw.Length < expectedRaw) return false;
 
         var scan = w * bpp;
         var prev = new byte[scan];
@@ -133,6 +141,30 @@ internal static class PngFallback
 
         image = new RgbImage(w, h, rgb);
         return true;
+    }
+
+    private static bool TryInflateBounded(byte[] compressed, long maxOutput, out byte[] output)
+    {
+        output = [];
+        if (compressed.Length == 0 || maxOutput <= 0 || maxOutput > int.MaxValue) return false;
+        try
+        {
+            using var input = new MemoryStream(compressed, writable: false);
+            using var zlib = new ZLibStream(input, CompressionMode.Decompress);
+            using var result = new MemoryStream();
+            var buffer = new byte[64 * 1024];
+            while (true)
+            {
+                var read = zlib.Read(buffer, 0, buffer.Length);
+                if (read == 0) break;
+                if (result.Length > maxOutput - read) return false;
+                result.Write(buffer, 0, read);
+            }
+            output = result.ToArray();
+            return output.Length != 0;
+        }
+        catch (InvalidDataException) { return false; }
+        catch (IOException) { return false; }
     }
 
     private static byte Paeth(byte a, byte b, byte c)

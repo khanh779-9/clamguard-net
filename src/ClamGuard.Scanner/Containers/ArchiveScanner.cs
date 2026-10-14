@@ -21,9 +21,14 @@ internal static partial class ArchiveScanner
         IReadOnlyList<string>? parents,
         int depth,
         CancellationToken cancellationToken,
-        string? forcedType = null)
+        string? forcedType = null,
+        ScanContext? context = null)
     {
-        var budget = new ArchiveScanBudget { ExpandedBytes = data.Length };
+        // When invoked from a nested re-entry (ScanBuffer) the caller's context
+        // carries the true recursion depth and the shared expansion budget, so
+        // limits keep accumulating across layers instead of resetting.
+        var budget = context?.Budget ?? new ArchiveScanBudget { ExpandedBytes = data.Length };
+        var effectiveDepth = context?.Depth ?? depth;
         if (!ScanTypePolicy.ShouldParseContainer(forcedType ?? ScannerEngine.DetectType(data, hintPath, state.Database.SpecialDatabases.FileTypes), options))
             return [];
         if (data.Length > options.Limits.MaxArchiveExpandedBytes)
@@ -34,7 +39,7 @@ internal static partial class ArchiveScanner
         }
         try
         {
-            var results = ScanInternal(data, hintPath, state, options, parents ?? [], depth, budget, cancellationToken, forcedType).ToList();
+            var results = ScanInternal(data, hintPath, state, options, parents ?? [], effectiveDepth, budget, cancellationToken, forcedType).ToList();
             if (budget.LimitExceeded && options.EnableHeuristics && options.HeuristicExceedsMax && !results.Any(x => x.Name.Equals("Heuristics.Limits.Exceeded", StringComparison.OrdinalIgnoreCase)))
                 results.Add(new Detection("Heuristics.Limits.Exceeded", SignatureType.Metadata, null, "heuristics", "One or more embedded objects could not be scanned because a configured scan limit was reached."));
             return options.FilterDetections(results);

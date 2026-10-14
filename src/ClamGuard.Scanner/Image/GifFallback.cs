@@ -15,13 +15,15 @@ internal static class GifFallback
         var height = BinaryPrimitives.ReadUInt16LittleEndian(data.Slice(8, 2));
         var packed = data[10];
         if (width == 0 || height == 0) return false;
+        if (width > ImageDecoder.MaxImageDimension || height > ImageDecoder.MaxImageDimension) return false;
+        if ((long)width * height * 3 > ImageDecoder.MaxImagePixelBytes) return false;
 
         var pos = 13;
         byte[]? globalPalette = null;
         if ((packed & 0x80) != 0)
         {
             var count = 2 << (packed & 7);
-            var bytes = checked(count * 3);
+            var bytes = count * 3;
             if (pos + bytes > data.Length) return false;
             globalPalette = data.Slice(pos, bytes).ToArray();
             pos += bytes;
@@ -55,7 +57,7 @@ internal static class GifFallback
             if ((imagePacked & 0x80) != 0)
             {
                 var count = 2 << (imagePacked & 7);
-                var bytes = checked(count * 3);
+                var bytes = count * 3;
                 if (pos + bytes > data.Length) return false;
                 localPalette = data.Slice(pos, bytes).ToArray();
                 pos += bytes;
@@ -65,11 +67,11 @@ internal static class GifFallback
             var minCodeSize = data[pos++];
             if (minCodeSize < 2 || minCodeSize > 8) return false;
             if (!ReadSubBlocks(data, ref pos, out var compressed)) return false;
-            if (!DecodeLzw(compressed, minCodeSize, checked(frameWidth * frameHeight), out var indices)) return false;
+            if (!DecodeLzw(compressed, minCodeSize, frameWidth * frameHeight, out var indices)) return false;
 
             var palette = localPalette ?? globalPalette;
             if (palette is null) return false;
-            var rgb = new byte[checked(width * height * 3)];
+            var rgb = new byte[width * height * 3];
             var interlaced = (imagePacked & 0x40) != 0;
             var srcIndex = 0;
             if (interlaced)
@@ -196,7 +198,7 @@ internal static class GifFallback
 
     private static bool ReadCode(ReadOnlySpan<byte> data, ref int bitPos, int codeSize, out int code)
     {
-        if (bitPos + codeSize > data.Length * 8) { code = 0; return false; }
+        if (bitPos + codeSize > (long)data.Length * 8) { code = 0; return false; }
         var value = 0;
         for (var i = 0; i < codeSize; i++)
             value |= ((data[(bitPos + i) >> 3] >> ((bitPos + i) & 7)) & 1) << i;

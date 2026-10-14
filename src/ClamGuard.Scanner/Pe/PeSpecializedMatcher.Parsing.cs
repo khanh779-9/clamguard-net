@@ -267,7 +267,12 @@ internal static partial class PeSpecializedMatcher
                 }
                 else
                 {
-                    var hintNameRva = checked((uint)thunkValue);
+                    // PE32+ thunks are 64-bit; malformed bits above the RVA range
+                    // must skip the entry, not throw OverflowException through
+                    // checked and abort the whole scan.
+                    if (thunkValue > uint.MaxValue)
+                        return false;
+                    var hintNameRva = (uint)thunkValue;
                     if (!RvaToRaw(hintNameRva, pe.Sections, data.Length, out var hintNameRaw) || hintNameRaw > data.Length - 2)
                         return false;
                     if (!TryReadAsciiZ(data, hintNameRaw + 2, MaxImportNameLength, out function)) return false;

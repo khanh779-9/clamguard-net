@@ -91,12 +91,12 @@ internal static partial class SpecializedFileHandlers
         CancellationToken cancellationToken)
     {
         if (data.IsEmpty) return [];
-        var ndb = state.Database.Signatures.OfType<NdbSignature>().ToArray();
+        var ndb = state.Database.NdbSignatures;
         var results = new List<Detection>();
         results.AddRange(state.Compiled.Match(data, path, includeNdb: false, collectAllMatches: (options.CollectAllMatches || !options.DetectPUA)));
         results.AddRange(ScannerEngine.EvaluateNdb(ndb, data, options.Limits, fileType, cancellationToken, options));
         results.AddRange(ScannerEngine.EvaluateLogical(
-            state.Database.Signatures.OfType<LogicalSignature>(),
+            state.Database.LogicalSignatures,
             ndb,
             data,
             options.Limits,

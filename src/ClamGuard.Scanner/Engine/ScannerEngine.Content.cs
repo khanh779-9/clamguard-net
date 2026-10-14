@@ -19,14 +19,30 @@ using ClamGuard.Bytecode;
 namespace ClamGuard.Scanner;
 public sealed partial class ScannerEngine
 {
-    internal static ScanResult ScanBuffer(byte[] buffer, int length, CompiledState state, ScanOptions options, string path, CancellationToken cancellationToken)
+    internal static ScanResult ScanBuffer(byte[] buffer, int length, CompiledState state, ScanOptions options, string path, CancellationToken cancellationToken, ScanContext? context = null)
     {
+        context ??= ScanContext.CreateRoot();
+        if (context.Depth >= options.Limits.MaxArchiveDepth)
+        {
+            var limitDetections = options.EnableHeuristics && options.HeuristicExceedsMax
+                ? new[] { new Detection("Heuristics.Limits.Exceeded", SignatureType.Metadata, null, "heuristics", "Nested layer recursion exceeds the configured maximum depth.") }
+                : Array.Empty<Detection>();
+            return new ScanResult(
+                limitDetections.Length == 0 ? ScanVerdict.Clean : ScanVerdict.StrongIndicator,
+                path,
+                null,
+                limitDetections,
+                length,
+                TimeSpan.Zero,
+                state.Database.Databases.FirstOrDefault());
+        }
+
         var data = buffer.AsSpan(0, length);
         var fileType = DetectType(data, path, state.Database.SpecialDatabases.FileTypes);
         var detections = new List<Detection>();
         if (ScanTypePolicy.ShouldRunSpecializedPreRaw(fileType, options))
         {
-            detections.AddRange(SpecializedFileHandlers.ScanPreRaw(data, fileType, state, options, path, cancellationToken));
+            detections.AddRange(SpecializedFileHandlers.ScanPreRaw(data, fileType, state, options, path, cancellationToken, context));
             if (!options.CollectAllMatches && options.HasBlockingDetections(detections))
                 return CreateDetectionResult(path, fileType, detections, length, TimeSpan.Zero, state.Database.Databases.FirstOrDefault(), options);
         }
@@ -75,7 +91,7 @@ public sealed partial class ScannerEngine
         if (ScanTypePolicy.IsMachO(fileType) && ScanTypePolicy.LooksLikeMachOFat(data))
             detections.AddRange(ScanMachOFatSlices(data, state, options, cancellationToken));
         if (ScanTypePolicy.IsArchiveContainer(fileType) && ScanTypePolicy.ShouldParseContainer(fileType, options))
-            detections.AddRange(ArchiveScanner.Scan(data, path, state, options, [], 0, cancellationToken));
+            detections.AddRange(ArchiveScanner.Scan(data, path, state, options, [], context.Depth, cancellationToken, context: context));
         var trusted = state.Compiled.MatchesFalsePositive(data);
         return CreateDetectionResult(path, fileType, detections, length, TimeSpan.Zero, state.Database.Databases.FirstOrDefault(), options, trusted);
     }
@@ -149,17 +165,26 @@ public sealed partial class ScannerEngine
         var results = new List<Detection>();
         if (data.IsEmpty) return results;
 
+        // Normalization and executable-context creation are per-target, not
+        // per-signature: memoize so 100 HTML-target rules normalize once.
+        var perTargetCache = new Dictionary<int, (byte[]? Normalized, LdbScanContext Context)>();
+
         foreach (var signature in signatures)
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (signature.MacroGroup is not null)
                 continue; // Macro members are consumed by LDB macro subsignatures, not alerts.
 
-            var normalized = NormalizeTargetData(data, fileType, signature.Target, scanOptions);
-            ReadOnlySpan<byte> scanData = data;
-            if (normalized is not null) scanData = normalized;
-            var context = LdbRuntime.CreateContext(scanData, fileType, scanOptions: scanOptions);
-            if (!LdbRuntime.TargetMatchesFileType(signature.Target, context))
+            var targetKey = (int)signature.Target;
+            if (!perTargetCache.TryGetValue(targetKey, out var entry))
+            {
+                entry.Normalized = NormalizeTargetData(data, fileType, signature.Target, scanOptions);
+                entry.Context = LdbRuntime.CreateContext(entry.Normalized ?? data, fileType, scanOptions: scanOptions);
+                perTargetCache[targetKey] = entry;
+            }
+
+            ReadOnlySpan<byte> scanData = entry.Normalized ?? data;
+            if (!LdbRuntime.TargetMatchesFileType(signature.Target, entry.Context))
                 continue;
 
             var content = new ContentSignature(
@@ -168,7 +193,7 @@ public sealed partial class ScannerEngine
                 signature.SourceFile,
                 signature.Pattern,
                 signature.OffsetExpression);
-            var matches = LogicalContentMatcher.FindContentMatches(content, scanData, context, limits.MaxPatternMatchesPerSignature);
+            var matches = LogicalContentMatcher.FindContentMatches(content, scanData, entry.Context, limits.MaxPatternMatchesPerSignature);
             if (matches.Count == 0)
                 continue;
 
@@ -257,6 +282,10 @@ public sealed partial class ScannerEngine
         if (activeSignatures.Count == 0)
             return results;
 
+        // Normalized buffers and executable contexts depend only on the target
+        // type; memoize per call instead of re-normalizing per signature.
+        var targetCache = new Dictionary<int, (byte[]? Normalized, LdbScanContext Context)>();
+
         // Only compute macro groups required by LDB rules that survived the
         // mandatory-anchor prefilter (or are not safely indexable). Scanning every
         // NDB macro group against the whole file first caused repeated full-file
@@ -279,22 +308,29 @@ public sealed partial class ScannerEngine
                 .ToDictionary(x => x.Key, x => x.ToArray());
         if (macroMembers.Count != 0)
         {
+            var memberCache = new Dictionary<int, (byte[]? Normalized, LdbScanContext Context)>();
             foreach (var pair in macroMembers)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var positions = new List<int>();
                 foreach (var member in pair.Value)
                 {
-                    var normalized = NormalizeTargetData(data, fileType, member.Target, scanOptions);
-                    ReadOnlySpan<byte> memberData = data;
-                    if (normalized is not null) memberData = normalized;
-                    var memberContext = normalized is null ? baseContext : LdbRuntime.CreateContext(memberData, fileType, parentTypes, retyped, scanOptions);
-                    if (!LdbRuntime.TargetMatchesFileType(member.Target, memberContext))
+                    var memberTargetKey = (int)member.Target;
+                    if (!memberCache.TryGetValue(memberTargetKey, out var memberEntry))
+                    {
+                        memberEntry.Normalized = NormalizeTargetData(data, fileType, member.Target, scanOptions);
+                        memberEntry.Context = memberEntry.Normalized is null
+                            ? baseContext
+                            : LdbRuntime.CreateContext(memberEntry.Normalized, fileType, parentTypes, retyped, scanOptions);
+                        memberCache[memberTargetKey] = memberEntry;
+                    }
+
+                    if (!LdbRuntime.TargetMatchesFileType(member.Target, memberEntry.Context))
                         continue;
                     // In an NDB macro member the $N$ offset is a group marker, not a file offset.
                     var memberMatches = LogicalContentMatcher.FindContentMatches(
                         new ContentSignature(member.Name, SignatureType.Ndb, member.SourceFile, member.Pattern, "*"),
-                        memberData, memberContext, limits.MaxPatternMatchesPerSignature);
+                        memberEntry.Normalized ?? data, memberEntry.Context, limits.MaxPatternMatchesPerSignature);
                     positions.AddRange(memberMatches);
                 }
                 if (positions.Count != 0)
@@ -307,10 +343,18 @@ public sealed partial class ScannerEngine
             cancellationToken.ThrowIfCancellationRequested();
 
             var target = signature.Target;
-            var normalized = NormalizeTargetData(data, fileType, target?.Target ?? 0, scanOptions);
-            ReadOnlySpan<byte> matchData = data;
-            if (normalized is not null) matchData = normalized;
-            var context = normalized is null ? baseContext : LdbRuntime.CreateContext(matchData, fileType, parentTypes, retyped, scanOptions);
+            var targetKey = (int)(target?.Target ?? 0);
+            if (!targetCache.TryGetValue(targetKey, out var targetEntry))
+            {
+                targetEntry.Normalized = NormalizeTargetData(data, fileType, target?.Target ?? 0, scanOptions);
+                targetEntry.Context = targetEntry.Normalized is null
+                    ? baseContext
+                    : LdbRuntime.CreateContext(targetEntry.Normalized, fileType, parentTypes, retyped, scanOptions);
+                targetCache[targetKey] = targetEntry;
+            }
+
+            ReadOnlySpan<byte> matchData = targetEntry.Normalized ?? data;
+            var context = targetEntry.Context;
             if (!LdbRuntime.MatchesTarget(target, context))
                 continue;
 

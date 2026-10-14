@@ -29,7 +29,8 @@ internal static partial class SpecializedFileHandlers
         CompiledState state,
         ScanOptions options,
         string path,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        ScanContext? context = null)
     {
         if (data.IsEmpty || data.Length > options.Limits.MaxEmbeddedStreamSize)
             return [];
@@ -72,7 +73,7 @@ internal static partial class SpecializedFileHandlers
                     continue;
 
                 results.AddRange(ScanNestedBytes(decoded, state, options,
-                    $"{path}#msxml-bindata", cancellationToken));
+                    $"{path}#msxml-bindata", cancellationToken, context));
                 if (!options.CollectAllMatches && options.HasBlockingDetections(results))
                     return options.FilterDetections(results).Take(1).ToArray();
             }
@@ -95,7 +96,8 @@ internal static partial class SpecializedFileHandlers
         CompiledState state,
         ScanOptions options,
         string path,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        ScanContext? context = null)
     {
         if (data.Length == 0 || data.Length > options.Limits.MaxEmbeddedStreamSize)
             return [];
@@ -150,7 +152,7 @@ internal static partial class SpecializedFileHandlers
                 }
 
                 results.AddRange(ScanNestedBytes(content, state, options,
-                    $"{path}#{local.ToLowerInvariant()}", cancellationToken));
+                    $"{path}#{local.ToLowerInvariant()}", cancellationToken, context));
                 if (!options.CollectAllMatches && options.HasBlockingDetections(results))
                     return options.FilterDetections(results).Take(1).ToArray();
             }
@@ -200,7 +202,8 @@ internal static partial class SpecializedFileHandlers
         CompiledState state,
         ScanOptions options,
         string path,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        ScanContext? context = null)
     {
         // ClamAV hwp.c: identity 30 bytes + docinfo 128 + docsummary 1008.
         const int identitySize = 30;
@@ -228,11 +231,11 @@ internal static partial class SpecializedFileHandlers
 
         var body = data.Slice((int)bodyOffsetLong);
         if (!compressed)
-            return ScanNestedBytes(body, state, options, $"{path}#hwp3-body", cancellationToken);
+            return ScanNestedBytes(body, state, options, $"{path}#hwp3-body", cancellationToken, context);
 
         if (!TryInflateRaw(body, options.Limits.MaxEmbeddedStreamSize, out var inflated))
             return [];
-        return ScanNestedBytes(inflated, state, options, $"{path}#hwp3-decompressed", cancellationToken);
+        return ScanNestedBytes(inflated, state, options, $"{path}#hwp3-decompressed", cancellationToken, context);
     }
 
     private static IReadOnlyList<Detection> ScanHwpoLe2(
@@ -240,7 +243,8 @@ internal static partial class SpecializedFileHandlers
         CompiledState state,
         ScanOptions options,
         string path,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        ScanContext? context = null)
     {
         // ClamAV cli_scanhwpole2(): 4-byte uncompressed-size prefix followed by OLE2.
         if (data.Length <= 4)
@@ -249,7 +253,7 @@ internal static partial class SpecializedFileHandlers
         var expectedSize = BinaryPrimitives.ReadUInt32LittleEndian(data[..4]);
         var actualSize = (uint)(data.Length - 4);
         _ = expectedSize; // native code warns on mismatch but still scans the OLE2 body.
-        return ScanNestedBytes(data[4..], state, options, $"{path}#hwp-ole2", cancellationToken);
+        return ScanNestedBytes(data[4..], state, options, $"{path}#hwp-ole2", cancellationToken, context);
     }
 
     private static IReadOnlyList<Detection> ScanNestedBytes(
@@ -257,7 +261,8 @@ internal static partial class SpecializedFileHandlers
         CompiledState state,
         ScanOptions options,
         string path,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        ScanContext? context = null)
     {
         if (data.Length == 0 || data.Length > int.MaxValue)
             return [];
@@ -269,7 +274,8 @@ internal static partial class SpecializedFileHandlers
             state,
             options,
             path,
-            cancellationToken);
+            cancellationToken,
+            (context ?? ScanContext.CreateRoot()).Descend());
         return result.Detections;
     }
 
