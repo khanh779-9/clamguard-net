@@ -69,11 +69,11 @@ public sealed class AhoCorasickMatcher
     /// Controls the maximum number of states that receive a dense int[256]
     /// transition table. Higher values trade RAM for speed. With ClamAV-sized
     /// databases the trie typically has 500K–2M states; flattening the first
-    /// 8192 (32 MiB) covers the busiest part of the automaton.
+    /// 8192 (8 MiB) covers the busiest part of the automaton.
     /// </summary>
     private const int MaxDenseStates = 8192;
 
-    public int StateCount => _nodes.Count;
+    public int StateCount => _built ? _frozenNodes.Length : _nodes.Count;
 
     public void Add(ReadOnlySpan<byte> pattern, int id)
     {

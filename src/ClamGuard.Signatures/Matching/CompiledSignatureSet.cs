@@ -1,4 +1,4 @@
-﻿using System.Security.Cryptography;
+using System.Security.Cryptography;
 using ClamGuard.Core;
 using ClamGuard.Signatures;
 using ClamGuard.Signatures.Patterns;
@@ -391,6 +391,7 @@ public sealed partial class CompiledSignatureSet
             var flexibleState = 0;
             var dataLength = data.Length;
             var candidatesById = new Dictionary<int, List<int>>();
+            var totalCandidates = 0;
             _flexibleAc.ScanUntil(data, ref flexibleState, 0, (id, endOffset) =>
             {
                 var entry = _flexibleAcEntries[id];
@@ -401,9 +402,19 @@ public sealed partial class CompiledSignatureSet
                 var candidate = (int)(endOffset - entry.Anchor.Length + 1) - entry.AnchorOffset;
                 if (candidate < 0 || candidate > dataLength - entry.Pattern.MinLength)
                     return false;
-                if (!candidatesById.TryGetValue(id, out var positions))
+                if (totalCandidates >= MaxCollectedCandidatesTotal)
+                    return true;
+                if (candidatesById.TryGetValue(id, out var positions))
+                {
+                    if (positions.Count >= MaxCollectedCandidatesPerPattern)
+                        return false;
+                }
+                else
+                {
                     candidatesById[id] = positions = [];
+                }
                 positions.Add(candidate);
+                totalCandidates++;
                 return false;
             });
 
@@ -565,6 +576,50 @@ public sealed partial class CompiledSignatureSet
             }, ignoredPatternIds);
         }
 
+        bool MatchFlexibleChunk(
+            byte[] scratchBuffer,
+            int combinedLength,
+            long viewStart,
+            byte[] rollingBuffer,
+            int rollingSize,
+            ref int rollingCount)
+        {
+            // Extracted from the async streaming loop: Span locals are not
+            // permitted in async methods before C# 13, and this keeps the file
+            // compilable with the .NET 8 SDK the repo pins.
+            var view = scratchBuffer.AsSpan(0, combinedLength);
+            var viewStartOffset = viewStart;
+
+            foreach (var content in _flexibleContent)
+            {
+                var before = hits.Count;
+                MatchFlexible(content, view, hits, viewStartOffset);
+                if (!collectAllMatches && hits.Count != before && !mustFinishForFalsePositiveCheck)
+                    return true;
+            }
+            if (includeNdb)
+            {
+                foreach (var ndb in _flexibleNdb)
+                {
+                    if (ndbFilter is not null && !ndbFilter(ndb))
+                        continue;
+
+                    var before = hits.Count;
+                    MatchFlexible(ndb, view, hits, viewStartOffset);
+                    if (!collectAllMatches && hits.Count != before && !mustFinishForFalsePositiveCheck)
+                        return true;
+                }
+            }
+
+            if (rollingSize > 0)
+            {
+                var keep = Math.Min(rollingSize, combinedLength);
+                view[^keep..].CopyTo(rollingBuffer);
+                rollingCount = keep;
+            }
+            return false;
+        }
+
         while (true)
         {
             var read = await input.ReadAsync(buffer.AsMemory(), cancellationToken);
@@ -606,40 +661,8 @@ public sealed partial class CompiledSignatureSet
                     scratch = scratch.Length >= combinedLength ? scratch : new byte[Math.Max(combinedLength, 4096)];
                     if (rollingCount > 0) Buffer.BlockCopy(rolling, 0, scratch, 0, rollingCount);
                     buffer.AsSpan(0, read).CopyTo(scratch.AsSpan(rollingCount));
-                    var view = scratch.AsSpan(0, combinedLength);
-                    var viewStartOffset = absoluteOffset - rollingCount;
-
-                    foreach (var content in _flexibleContent)
-                    {
-                        var before = hits.Count;
-                        MatchFlexible(content, view, hits, viewStartOffset);
-                        if (!collectAllMatches && hits.Count != before && !mustFinishForFalsePositiveCheck)
-                        {
-                            return (hits.Values.ToArray(), false, totalBytes);
-                        }
-                    }
-                    if (includeNdb)
-                    {
-                        foreach (var ndb in _flexibleNdb)
-                        {
-                            if (ndbFilter is not null && !ndbFilter(ndb))
-                                continue;
-
-                            var before = hits.Count;
-                            MatchFlexible(ndb, view, hits, viewStartOffset);
-                            if (!collectAllMatches && hits.Count != before && !mustFinishForFalsePositiveCheck)
-                            {
-                                return (hits.Values.ToArray(), false, totalBytes);
-                            }
-                        }
-                    }
-
-                    if (rollingSize > 0)
-                    {
-                        var keep = Math.Min(rollingSize, combinedLength);
-                        view[^keep..].CopyTo(rolling);
-                        rollingCount = keep;
-                    }
+                    if (MatchFlexibleChunk(scratch, combinedLength, absoluteOffset - rollingCount, rolling, rollingSize, ref rollingCount))
+                        return (hits.Values.ToArray(), false, totalBytes);
                 }
             }
 

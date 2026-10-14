@@ -46,7 +46,7 @@ internal static class NdbSignatureParser
             var offsetExpression = parts[2].Trim();
             if (offsetExpression.Length == 0)
                 offsetExpression = "*";
-            ValidateNdbOffsetExpression(offsetExpression, path, line);
+            ValidateNdbOffsetExpression(offsetExpression, target, path, line);
 
             int? macroGroup = null;
             if (offsetExpression.StartsWith("$", StringComparison.Ordinal))
@@ -77,17 +77,21 @@ internal static class NdbSignatureParser
     }
 
 
-    private static void ValidateNdbOffsetExpression(string expression, string path, string line)
+    private static void ValidateNdbOffsetExpression(string expression, int target, string path, string line)
     {
         if (expression == "*") return;
 
         var comma = expression.IndexOf(',');
         if (comma >= 0)
         {
+            // cli_caloff() splits the max shift on the first comma; the base
+            // expression must still be non-empty.
             if (expression.IndexOf(',', comma + 1) >= 0 ||
                 !int.TryParse(expression[(comma + 1)..].Trim(), out var maxShift) || maxShift < 0)
                 throw new FormatException($"Invalid NDB floating offset '{expression}' in {path}: {line}");
             expression = expression[..comma].Trim();
+            if (expression.Length == 0)
+                throw new FormatException($"Invalid NDB offset in {path}: {line}");
         }
 
         if (int.TryParse(expression, out var absolute) && absolute >= 0) return;
@@ -97,15 +101,33 @@ internal static class NdbSignatureParser
             int.TryParse(expression[4..], out var eofShift) && eofShift >= 0) return;
         if (expression.StartsWith("$", StringComparison.Ordinal) && expression.EndsWith("$", StringComparison.Ordinal) &&
             int.TryParse(expression[1..^1], out var group) && group is >= 0 and < 32) return;
-        if (expression.StartsWith("EP+", StringComparison.OrdinalIgnoreCase) && int.TryParse(expression[3..], out var epPlus) && epPlus >= 0) return;
-        if (expression.StartsWith("EP-", StringComparison.OrdinalIgnoreCase) && int.TryParse(expression[3..], out var epMinus) && epMinus >= 0) return;
-        if (expression.StartsWith("SL+", StringComparison.OrdinalIgnoreCase) && int.TryParse(expression[3..], out var slPlus) && slPlus >= 0) return;
-        if (expression.StartsWith("SE", StringComparison.OrdinalIgnoreCase) && int.TryParse(expression[2..], out var seIndex) && seIndex >= 0) return;
-        if (expression.StartsWith("S", StringComparison.OrdinalIgnoreCase))
+
+        // cli_caloff() computes entry-point, section, and version-info offsets
+        // from the parsed executable headers, so ClamAV rejects those offsets at
+        // load time for every target other than PE (1), ELF (6) and Mach-O (9).
+        bool executableRelative =
+            expression.StartsWith("VI", StringComparison.OrdinalIgnoreCase) ||
+            expression.StartsWith("EP+", StringComparison.OrdinalIgnoreCase) ||
+            expression.StartsWith("EP-", StringComparison.OrdinalIgnoreCase) ||
+            expression.StartsWith("SL+", StringComparison.OrdinalIgnoreCase) ||
+            expression.StartsWith("SE", StringComparison.OrdinalIgnoreCase) ||
+            expression.StartsWith("S", StringComparison.OrdinalIgnoreCase);
+        if (executableRelative)
         {
-            var plus = expression.IndexOf('+');
-            if (plus > 1 && int.TryParse(expression[1..plus], out var sIndex) && sIndex >= 0 &&
-                int.TryParse(expression[(plus + 1)..], out var sOffset) && sOffset >= 0) return;
+            if (target is not (1 or 6 or 9))
+                throw new FormatException($"Executable-relative NDB offset '{expression}' requires an executable target in {path}: {line}");
+
+            if (expression.StartsWith("VI", StringComparison.OrdinalIgnoreCase)) return;
+            if (expression.StartsWith("EP+", StringComparison.OrdinalIgnoreCase) && int.TryParse(expression[3..], out var epPlus) && epPlus >= 0) return;
+            if (expression.StartsWith("EP-", StringComparison.OrdinalIgnoreCase) && int.TryParse(expression[3..], out var epMinus) && epMinus >= 0) return;
+            if (expression.StartsWith("SL+", StringComparison.OrdinalIgnoreCase) && int.TryParse(expression[3..], out var slPlus) && slPlus >= 0) return;
+            if (expression.StartsWith("SE", StringComparison.OrdinalIgnoreCase) && int.TryParse(expression[2..], out var seIndex) && seIndex >= 0) return;
+            if (expression.StartsWith("S", StringComparison.OrdinalIgnoreCase))
+            {
+                var plus = expression.IndexOf('+');
+                if (plus > 1 && int.TryParse(expression[1..plus], out var sIndex) && sIndex >= 0 &&
+                    int.TryParse(expression[(plus + 1)..], out var sOffset) && sOffset >= 0) return;
+            }
         }
 
         throw new FormatException($"Unsupported NDB offset '{expression}' in {path}: {line}");

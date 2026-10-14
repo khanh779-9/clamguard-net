@@ -43,30 +43,45 @@ public sealed partial class CompiledSignatureSet
         ISet<NdbSignature>? ndbPatternCandidates,
         Func<NdbSignature, bool>? ndbCandidateFilter)
     {
-        var start = matcher.FindFirst(data);
-        if (start < 0)
-            return;
-
-        if (entry.Type == SignatureType.Ndb && ndbSignature is not null &&
-            ndbPatternCandidates is not null &&
-            !ndbPatternCandidates.Contains(ndbSignature) &&
-            (ndbCandidateFilter is null || ndbCandidateFilter(ndbSignature)))
+        // A fixed pattern can occur at several positions; an offset-constrained
+        // rule must try every occurrence until one satisfies its offset
+        // expression (the first occurrence may legitimately fail the offset
+        // test). This mirrors cli_bm_scanbuff(), which checks offdata per hit.
+        var searchStart = 0;
+        while (true)
         {
-            ndbPatternCandidates.Add(ndbSignature);
-        }
+            var start = matcher.FindFirst(data, searchStart);
+            if (start < 0)
+                return;
+            searchStart = start + 1;
 
-        if (entry.Type == SignatureType.Ndb &&
-            (!includeNdb || ndbSignature is null || (ndbFilter is not null && !ndbFilter(ndbSignature))))
-            return;
+            if (entry.Type == SignatureType.Ndb && ndbSignature is not null &&
+                ndbPatternCandidates is not null &&
+                !ndbPatternCandidates.Contains(ndbSignature) &&
+                (ndbCandidateFilter is null || ndbCandidateFilter(ndbSignature)))
+            {
+                ndbPatternCandidates.Add(ndbSignature);
+            }
 
-        if (OffsetAllows(entry.OffsetExpression, start, data.Length))
-        {
-            hits.TryAdd(entry.Name, new Detection(entry.Name, entry.Type, start, entry.SourceFile, "Fixed content pattern matched by BM fast path."));
+            if (entry.Type == SignatureType.Ndb &&
+                (!includeNdb || ndbSignature is null || (ndbFilter is not null && !ndbFilter(ndbSignature))))
+                return;
+
+            if (OffsetAllows(entry.OffsetExpression, start, data.Length))
+            {
+                hits.TryAdd(entry.Name, new Detection(entry.Name, entry.Type, start, entry.SourceFile, "Fixed content pattern matched by BM fast path."));
+                return;
+            }
         }
     }
 
     private const int MinAnchorLength = 4;
     private const int MaxAnchorVerificationsPerPattern = 64;
+    // Upper bound on buffered flexible candidates before verification. Frequent
+    // anchors (zero runs, MZ pads) on untrusted data previously collected one
+    // candidate per occurrence, which allowed an O(filesize) memory blow-up.
+    private const int MaxCollectedCandidatesPerPattern = 4096;
+    private const int MaxCollectedCandidatesTotal = 65536;
 
     private void MatchAho(
         AhoCorasickMatcher matcher,
@@ -203,15 +218,19 @@ public sealed partial class CompiledSignatureSet
 
                 var anchorPosition = searchStart + relative;
                 searchStart = anchorPosition + 1;
-                if (++attempts > MaxAnchorVerificationsPerPattern)
-                    break;
 
                 var candidate = anchorPosition - anchorOffset;
                 if (candidate < 0 || candidate > maxStart)
                     continue;
                 var absoluteOffset = baseOffset + candidate;
-                if (!OffsetAllows(offsetExpression, absoluteOffset, fileLength) ||
-                    !pattern.Matches(data, candidate, out _))
+                if (!OffsetAllows(offsetExpression, absoluteOffset, fileLength))
+                    continue;
+                // Count only genuine verification attempts: occurrences filtered
+                // out by offset arithmetic are cheap and must not consume the
+                // verification budget before the real candidate is reached.
+                if (++attempts > MaxAnchorVerificationsPerPattern)
+                    break;
+                if (!pattern.Matches(data, candidate, out _))
                 {
                     continue;
                 }
